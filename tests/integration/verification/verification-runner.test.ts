@@ -296,6 +296,63 @@ describe("VerificationRunner", () => {
     expect(evidence.commands[0]?.durationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("rejects a compound command with a shell operator instead of running a mangled command", async () => {
+    const { root } = await createFixtureRepo();
+    const { workspace, workspaceManager } = await makeWorkspace(root, "verify-run-13");
+    const { store } = makeStore();
+    const runner = new VerificationRunner({
+      processRunner: new ProcessRunner(),
+      artifacts: store,
+      workspaceManager,
+    });
+
+    const evidence = await runner.runVerification(workspace, "verify-run-13", {
+      commands: [
+        "node -e \"process.exit(0)\" && node -e \"process.exit(1)\"",
+        "node -e \"process.exit(0)\"",
+      ],
+      timeoutMs: 10_000,
+    });
+
+    expect(evidence.commands).toHaveLength(2);
+    const rejected = evidence.commands[0];
+    expect(rejected?.exitCode).toBeNull();
+    expect(rejected?.timedOut).toBe(false);
+    expect(rejected?.error).toBeDefined();
+    expect(rejected?.error).toMatch(/operator|glob|substitution|redirection/i);
+    // The second, well-formed command still runs and is recorded.
+    expect(evidence.commands[1]?.exitCode).toBe(0);
+    expect(evidence.commands[1]?.error).toBeUndefined();
+    expect(evidence.passed).toBe(false);
+  });
+
+  it("records an empty command as a failed outcome and continues running the remaining commands", async () => {
+    const { root } = await createFixtureRepo();
+    const { workspace, workspaceManager } = await makeWorkspace(root, "verify-run-14");
+    const { store } = makeStore();
+    const runner = new VerificationRunner({
+      processRunner: new ProcessRunner(),
+      artifacts: store,
+      workspaceManager,
+    });
+
+    const evidence = await runner.runVerification(workspace, "verify-run-14", {
+      commands: ["", "node -e \"process.exit(0)\""],
+      timeoutMs: 10_000,
+    });
+
+    expect(evidence.commands).toHaveLength(2);
+    const empty = evidence.commands[0];
+    expect(empty?.exitCode).toBeNull();
+    expect(empty?.timedOut).toBe(false);
+    expect(empty?.error).toBeDefined();
+    expect(empty?.error).toMatch(/empty command/i);
+    // The valid command after it still runs and is recorded.
+    expect(evidence.commands[1]?.exitCode).toBe(0);
+    expect(evidence.commands[1]?.error).toBeUndefined();
+    expect(evidence.passed).toBe(false);
+  });
+
   describe("runSetup", () => {
     it("runs setup commands once in order and succeeds when all exit zero", async () => {
       const { root } = await createFixtureRepo();

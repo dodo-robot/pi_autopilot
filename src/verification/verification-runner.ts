@@ -23,6 +23,12 @@ export interface CommandOutcome {
   finishedAt: string;
   stdoutArtifact: ArtifactRef | null;
   stderrArtifact: ArtifactRef | null;
+  /**
+   * Set when the command could not be executed at all (empty command, or a
+   * shell operator/glob/substitution/redirection that this runner refuses
+   * to interpret). `exitCode` is `null` and no process ever ran.
+   */
+  error?: string;
 }
 
 /** Result of running a workspace's configured setup commands. */
@@ -79,11 +85,32 @@ function policyHash(commands: string[]): string {
   return createHash("sha256").update(JSON.stringify(commands)).digest("hex");
 }
 
-/** Split a shell command string into a bare command and its arguments. */
+/**
+ * Split a shell command string into a bare command and its arguments.
+ *
+ * Fails closed, matching the convention in `src/security/command-policy.ts`:
+ * any non-string token from `shell-quote` (operators like `&&`/`||`/`;`/`|`,
+ * globs, substitutions, redirections) means the string is not a single plain
+ * command, so it is rejected outright rather than silently dropped and
+ * glued onto the surrounding tokens.
+ */
 function splitCommand(command: string): { command: string; args: string[] } {
-  const tokens = parseShell(command);
-  const parts = tokens.filter((token): token is string => typeof token === "string");
-  const [first, ...rest] = parts;
+  if (command.trim().length === 0) {
+    throw new VerificationRunnerError(`empty command: ${JSON.stringify(command)}`);
+  }
+
+  const rawTokens = parseShell(command);
+  const tokens: string[] = [];
+  for (const token of rawTokens) {
+    if (typeof token !== "string") {
+      throw new VerificationRunnerError(
+        `command contains a shell operator, glob, substitution, or redirection and was rejected: ${JSON.stringify(command)}`,
+      );
+    }
+    tokens.push(token);
+  }
+
+  const [first, ...rest] = tokens;
   if (first === undefined) {
     throw new VerificationRunnerError(`empty command: ${JSON.stringify(command)}`);
   }
@@ -193,7 +220,25 @@ export class VerificationRunner {
     env: Record<string, string> | undefined,
   ): Promise<CommandOutcome> {
     const startedAt = nowIso();
-    const { command: bin, args } = splitCommand(command);
+
+    let bin: string;
+    let args: string[];
+    try {
+      ({ command: bin, args } = splitCommand(command));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        command,
+        exitCode: null,
+        timedOut: false,
+        durationMs: 0,
+        startedAt,
+        finishedAt: nowIso(),
+        stdoutArtifact: null,
+        stderrArtifact: null,
+        error: message,
+      };
+    }
 
     const result = await this.processRunner.run({
       command: bin,
