@@ -18,7 +18,16 @@ import { ProcessRunner } from "../../../src/platform/process-runner.js";
 import { WorkspaceManager } from "../../../src/workspace/workspace-manager.js";
 import type { Workspace, WorkspacePolicy } from "../../../src/workspace/workspace-manager.js";
 import { RecoveryService } from "../../../src/workflow/recovery-service.js";
-import type { TaskSnapshot } from "../../../src/domain/contracts.js";
+import { RunService } from "../../../src/workflow/run-service.js";
+import type { RunPiRunner } from "../../../src/workflow/run-service.js";
+import { sha256 } from "../../../src/readiness/readiness-service.js";
+import type {
+  ImplementerResult,
+  ReviewerResult,
+  Role,
+  TaskSnapshot,
+} from "../../../src/domain/contracts.js";
+import type { PiExecution, PiRunRequest } from "../../../src/pi/pi-runner.js";
 
 let tempDirs: string[] = [];
 
@@ -289,6 +298,111 @@ async function makeHarness(): Promise<Harness> {
   };
 }
 
+type AnyRoleResult = PiExecution["result"];
+
+/** Scripted, per-role Pi fake; records every request for assertions. */
+class ScriptedPiRunner implements RunPiRunner {
+  readonly requests: PiRunRequest[] = [];
+  private readonly queues = new Map<Role, AnyRoleResult[]>();
+
+  script(role: Role, entries: AnyRoleResult[]): void {
+    this.queues.set(role, [...entries]);
+  }
+
+  async run(request: PiRunRequest): Promise<PiExecution> {
+    this.requests.push(request);
+    const queue = this.queues.get(request.role);
+    if (queue === undefined || queue.length === 0) {
+      throw new Error(`no scripted response left for role ${request.role}`);
+    }
+    const result = queue.shift()!;
+    if (request.role === "implementer" && result.outcome === "COMPLETED") {
+      writeFileSync(
+        path.join(request.worktree, `resume-change-${String(this.requests.length)}.txt`),
+        "change\n",
+        "utf8",
+      );
+    }
+    return {
+      result,
+      exitCode: 0,
+      durationMs: 1,
+      stdout: "",
+      stderr: "",
+      resultPath: path.join(request.diagnosticsDir, "result.json"),
+    };
+  }
+}
+
+function reviewerApproved(): ReviewerResult {
+  return {
+    outcome: "APPROVED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
+    findings: [],
+  };
+}
+
+function implementerCompleted(summary: string): ImplementerResult {
+  return {
+    outcome: "COMPLETED",
+    summary,
+    changedPaths: ["feature.txt"],
+    commandsAttempted: ["true"],
+    unresolvedProblems: [],
+    evidenceLocations: [],
+  };
+}
+
+/**
+ * Seed a run that reached BLOCKED after one recorded implementer attempt
+ * (e.g. a failed setup or an implementer BLOCKED outcome), so a resume
+ * test can prove attempt counters continue from 1, not reset to 0.
+ */
+async function seedBlockedRun(harness: Harness): Promise<{ id: string; workspace: Workspace }> {
+  const id = "run-blocked-for-resume";
+  const run = harness.runStore.createRun({
+    id,
+    repository: { owner: "acme", repo: REPO_NAME },
+    issueNumber: 42,
+  });
+  // Use a snapshot whose sourceBodyHash/updatedAt match the harness's fixed
+  // ISSUE, so a real resumed publish (unlike reconcile, which never
+  // publishes) does not trip the "source issue changed materially" guard.
+  const snapshot: TaskSnapshot = {
+    ...taskSnapshot(),
+    issue: { number: 42, nodeId: "I_42", updatedAt: ISSUE.updatedAt },
+    sourceBodyHash: sha256(ISSUE.body),
+  };
+  const ref = await harness.artifacts.writeJson(id, "task-snapshot.json", snapshot);
+  harness.runStore.setTaskSnapshotRef(id, ref.relative);
+
+  const workspace = await harness.workspaceManager.create({
+    runId: id,
+    issueNumber: 42,
+    title: snapshot.objective,
+    baseBranch: "main",
+  });
+
+  harness.runStore.transition(run.id, "PREFLIGHT", "READINESS_CHECK", null);
+  harness.runStore.transition(run.id, "READINESS_CHECK", "WORKSPACE_CREATION", null);
+  harness.runStore.transition(run.id, "WORKSPACE_CREATION", "IMPLEMENTATION", null);
+  harness.runStore.recordAttempt({
+    runId: id,
+    role: "implementer",
+    attemptNumber: 1,
+    model: "anthropic/claude-sonnet-4",
+    thinking: "medium",
+  });
+  const blockedRef = await harness.artifacts.writeJson(id, "implementer-result-1.json", {
+    outcome: "BLOCKED",
+    reason: "missing credentials",
+    unresolvedProblems: ["missing credentials"],
+  });
+  harness.runStore.transition(run.id, "IMPLEMENTATION", "BLOCKED", blockedRef.relative);
+
+  return { id, workspace };
+}
+
 afterEach(() => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs = [];
@@ -463,6 +577,107 @@ describe("RecoveryService.abandon", () => {
     await harness.service.abandon("run-terminal");
 
     await expect(harness.service.abandon("run-terminal")).rejects.toThrow();
+    harness.runStore.close();
+  });
+});
+
+describe("RecoveryService.resume", () => {
+  it("launches a fresh session in the preserved workspace, continuing attempt counters and preserving the snapshot", async () => {
+    const harness = await makeHarness();
+    const { id: runId, workspace } = await seedBlockedRun(harness);
+
+    const pi = new ScriptedPiRunner();
+    pi.script("implementer", [implementerCompleted("Resumed.")]);
+    pi.script("reviewer", [reviewerApproved()]);
+
+    const runService = new RunService({
+      cwd: harness.root,
+      dataDir: harness.dataDir,
+      processRunner: harness.processRunner,
+      createRepositoryContext: async () => harness.repository,
+      createGitHub: async () => harness.github,
+      createPi: () => pi,
+    });
+    const service = new RecoveryService({
+      runStore: harness.runStore,
+      artifacts: harness.artifacts,
+      paths: appPaths(harness.dataDir),
+      workspaceManager: harness.workspaceManager,
+      github: harness.github,
+      processRunner: harness.processRunner,
+      repository: harness.repository,
+      baseBranch: "main",
+      runService,
+    });
+
+    const summary = await service.resume(runId);
+
+    expect(summary.stage).toBe("PR_OPEN");
+
+    // The fresh session launched in the SAME preserved workspace path
+    // (never a new/relocated worktree).
+    const implementerRequests = pi.requests.filter((r) => r.role === "implementer");
+    expect(implementerRequests).toHaveLength(1);
+    expect(implementerRequests[0]!.worktree).toBe(workspace.path);
+
+    // Attempt counters continue rather than resetting: the pre-existing
+    // attempt (attemptNumber 1, recorded before BLOCKED) plus exactly one
+    // new implementer attempt and one new reviewer attempt.
+    const attempts = harness.runStore.listAttempts(runId);
+    expect(attempts.map((a) => a.attemptNumber)).toEqual([1, 2, 3]);
+    expect(attempts[0]!.role).toBe("implementer");
+    expect(attempts[1]!.role).toBe("implementer");
+    expect(attempts[2]!.role).toBe("reviewer");
+
+    // The original frozen snapshot is preserved (never regenerated).
+    const run = harness.runStore.getRun(runId);
+    const snapshot = await harness.artifacts.readJson<TaskSnapshot>(
+      runId,
+      run!.taskSnapshotRef!,
+    );
+    expect(snapshot.objective).toBe("Implement token refresh validation");
+
+    harness.runStore.close();
+  });
+
+  it("rejects resuming a run that is not BLOCKED", async () => {
+    const harness = await makeHarness();
+    await harness.seedRun("run-not-blocked", "IMPLEMENTATION");
+
+    const pi = new ScriptedPiRunner();
+    const runService = new RunService({
+      cwd: harness.root,
+      dataDir: harness.dataDir,
+      processRunner: harness.processRunner,
+      createRepositoryContext: async () => harness.repository,
+      createGitHub: async () => harness.github,
+      createPi: () => pi,
+    });
+    const service = new RecoveryService({
+      runStore: harness.runStore,
+      artifacts: harness.artifacts,
+      paths: appPaths(harness.dataDir),
+      workspaceManager: harness.workspaceManager,
+      github: harness.github,
+      processRunner: harness.processRunner,
+      repository: harness.repository,
+      baseBranch: "main",
+      runService,
+    });
+
+    await expect(service.resume("run-not-blocked")).rejects.toThrow(/not BLOCKED/);
+    expect(pi.requests).toHaveLength(0);
+    harness.runStore.close();
+  });
+
+  it("rejects resuming when constructed without a runService dependency", async () => {
+    const harness = await makeHarness();
+    const { id: runId } = await seedBlockedRun(harness);
+
+    // harness.service was constructed by makeHarness() without a
+    // runService (only reconcile/abandon need one); resume must fail
+    // fast with a clear error rather than throwing an unrelated TypeError.
+    await expect(harness.service.resume(runId)).rejects.toThrow(/without a runService/);
     harness.runStore.close();
   });
 });

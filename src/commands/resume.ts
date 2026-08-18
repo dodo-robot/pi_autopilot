@@ -1,6 +1,15 @@
 import { Command } from "commander";
+import { loadRepositoryConfig } from "../config/load-config.js";
 import type { RoleModelOverride } from "../config/schema.js";
 import { ThinkingLevelSchema } from "../config/schema.js";
+import { resolveRepositoryContext } from "../github/repository-context.js";
+import { GitHubAdapter } from "../github/github-adapter.js";
+import { ArtifactStore } from "../persistence/artifact-store.js";
+import { RunStore } from "../persistence/run-store.js";
+import { appPaths } from "../platform/paths.js";
+import { ProcessRunner as ProcessRunnerImpl } from "../platform/process-runner.js";
+import { WorkspaceManager } from "../workspace/workspace-manager.js";
+import { RecoveryService } from "../workflow/recovery-service.js";
 import type { RunOverrides, RunServiceDeps, RunSummary } from "../workflow/run-service.js";
 import { RunService } from "../workflow/run-service.js";
 
@@ -42,7 +51,11 @@ function resolveOverrides(opts: ResumeOptions): RunOverrides {
  * `autopilot resume <run-id>` — continue a `BLOCKED` run with one fresh,
  * transcript-free correction attempt in its preserved workspace. Requires
  * the run to be currently `BLOCKED`; every other stage (including every
- * terminal stage) is rejected.
+ * terminal stage) is rejected. Routes through `RecoveryService.resume`
+ * (which re-validates BLOCKED and then delegates to `RunService.resume`),
+ * consistent with `abandon.ts` routing through `RecoveryService.abandon` —
+ * `RecoveryService` is the single coordination point for both operator
+ * recovery actions.
  */
 export function registerResumeCommand(
   program: Command,
@@ -61,9 +74,37 @@ export function registerResumeCommand(
       const setExitCode = deps.setExitCode ?? ((code: number) => {
         process.exitCode = code;
       });
+      const paths = appPaths(deps.dataDir);
+      const runStore = new RunStore(paths.dbPath);
       try {
         const overrides = resolveOverrides(opts);
-        const service = new RunService(deps);
+        const runner = deps.processRunner ?? new ProcessRunnerImpl();
+        const ctx =
+          deps.createRepositoryContext !== undefined
+            ? await deps.createRepositoryContext(deps.cwd ?? process.cwd(), runner)
+            : await resolveRepositoryContext(deps.cwd ?? process.cwd(), runner);
+        const config = await loadRepositoryConfig(ctx.root);
+        const github =
+          deps.createGitHub !== undefined
+            ? await deps.createGitHub(ctx, runner)
+            : await GitHubAdapter.create(ctx.root, runner);
+
+        const runService = new RunService(deps);
+        const service = new RecoveryService({
+          runStore,
+          artifacts: new ArtifactStore(paths),
+          paths,
+          workspaceManager: new WorkspaceManager({
+            processRunner: runner,
+            repository: ctx,
+            policy: config.workspace,
+          }),
+          github,
+          processRunner: runner,
+          repository: ctx,
+          baseBranch: config.workspace.baseBranch,
+          runService,
+        });
         const summary = await service.resume(runId, overrides);
         if (opts.json === true) {
           stdout(JSON.stringify(summary, null, 2));
@@ -76,6 +117,8 @@ export function registerResumeCommand(
           `autopilot resume: ${error instanceof Error ? error.message : String(error)}`,
         );
         setExitCode(1);
+      } finally {
+        runStore.close();
       }
     });
 }
