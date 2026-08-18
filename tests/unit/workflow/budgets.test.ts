@@ -69,6 +69,26 @@ describe("fingerprintFailure", () => {
     const b = fingerprintFailure(makeFailure({ stage: "IMPLEMENTATION" }));
     expect(a).not.toBe(b);
   });
+
+  it("produces different fingerprints for findings that differ only by a substantive numeric literal", () => {
+    const a = fingerprintFailure(
+      makeFailure({ findings: ["expected 3 items, got 5"] }),
+    );
+    const b = fingerprintFailure(
+      makeFailure({ findings: ["expected 3 items, got 7"] }),
+    );
+    expect(a).not.toBe(b);
+  });
+
+  it("still collapses genuinely volatile path/line-number differences to the same fingerprint", () => {
+    const a = fingerprintFailure(
+      makeFailure({ findings: ["src/a.ts:12:4: assertion failed"] }),
+    );
+    const b = fingerprintFailure(
+      makeFailure({ findings: ["src/a.ts:99:1: assertion failed"] }),
+    );
+    expect(a).toBe(b);
+  });
 });
 
 describe("BudgetTracker.recordFailure", () => {
