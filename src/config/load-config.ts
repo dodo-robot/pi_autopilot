@@ -45,6 +45,17 @@ export async function loadRepositoryConfig(root: string): Promise<AutopilotConfi
 
 export type ModelSource = "cli" | "repository" | "user" | "pi-default";
 
+/**
+ * Fallback Pi default model used when neither the repository role
+ * configuration nor user defaults resolve a role. Mirrors the M1 design's
+ * example configuration; the operator can override it per repository or
+ * per command.
+ */
+export const DEFAULT_PI_MODEL: RoleModelEntry = {
+  model: "anthropic/claude-sonnet-4",
+  thinking: "high",
+};
+
 export interface ResolvedRoleModel {
   model: string;
   thinking: ThinkingLevel;
