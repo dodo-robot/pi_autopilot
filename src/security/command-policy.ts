@@ -159,10 +159,11 @@ export function evaluateShellCommand(
   }
 
   // `npm --call` / `npm -c` (and the nopt `--call=` form) run an arbitrary
-  // quoted string through a shell, bypassing every token-level check. Reject
+  // quoted string through a shell, bypassing every token-level check. `npx`
+  // accepts the identical `--call`/`-c` flags with the same effect. Reject
   // the whole command outright: parsing the quoted string's own tokens would
   // reopen the same smuggling class by construction.
-  if (first === "npm") {
+  if (first === "npm" || first === "npx") {
     for (let i = 1; i < tokens.length; i++) {
       const token = tokens[i];
       if (

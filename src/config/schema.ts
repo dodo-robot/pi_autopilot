@@ -57,6 +57,7 @@ export const AutopilotConfigSchema = z.object({
         .array(z.string())
         .default(["npm", "npx", "node", "rg", "find"]),
       protectedPaths: z.array(z.string()).default([]),
+      // Declared for a later milestone; not enforced in M1.
       allowNetwork: z.boolean().default(false),
     })
     .prefault({}),

@@ -543,9 +543,10 @@ class RunAttempt {
    * fresh correction session on a failed verification or a
    * CHANGES_REQUESTED review, until the run is approved, blocked, or
    * otherwise reaches a terminal stage. A single loop (rather than nested
-   * recursive loops) keeps the two-cycle correction budget and the
-   * BLOCKED-quiescence rule easy to verify: every path that consumes a
-   * correction cycle runs through the same budget check before looping.
+   * recursive loops) keeps the two independent budgets (implementation
+   * attempts, review correction cycles) and the BLOCKED-quiescence rule
+   * easy to verify: every path that consumes either budget runs through
+   * the same budget check before looping.
    */
   private async runImplementationLoop(
     snapshot: TaskSnapshot,
@@ -744,8 +745,9 @@ class RunAttempt {
       return { kind: "terminal", summary: this.summary({ reason: review.reason }) };
     }
 
-    // CHANGES_REQUESTED: the two-cycle budget covers verification and review
-    // correction cycles together (a single BudgetTracker instance spans both).
+    // CHANGES_REQUESTED: bounded by the review-correction budget
+    // (review.maxCorrectionCycles), a counter independent of the
+    // implementation-attempt budget that bounds verification-driven retries.
     const findings = review.findings.map(
       (f) => `${f.severity}:${f.criterionId}:${f.path}:${String(f.line)}:${f.requestedChange}`,
     );
