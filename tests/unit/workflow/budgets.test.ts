@@ -145,6 +145,33 @@ describe("BudgetTracker.recordFailure", () => {
     expect(result.decision).toBe("BLOCK_BUDGET_EXHAUSTED");
   });
 
+  it("blocks with BLOCK_BUDGET_EXHAUSTED once VERIFICATION failures reach the implementation attempt maxAttempts", () => {
+    // A VERIFICATION-stage failure spends the same implementation attempt
+    // budget as an IMPLEMENTATION-stage failure: a run whose verification
+    // fails with a different finding every time (so the repeated-failure
+    // fingerprint never fires) must still be bounded by maxAttempts.
+    const tracker = new BudgetTracker(
+      { implementationAttempts: 3, correctionCycles: 0 },
+      baseLimits,
+    );
+    const result = tracker.recordFailure(
+      makeFailure({ stage: "VERIFICATION", findings: ["attempt 4 verification problem"] }),
+    );
+    expect(result.decision).toBe("BLOCK_BUDGET_EXHAUSTED");
+    expect(result.reason).toContain("implementation attempts exhausted");
+  });
+
+  it("allows exactly maxAttempts VERIFICATION failures before exhausting the budget", () => {
+    const tracker = new BudgetTracker(
+      { implementationAttempts: 2, correctionCycles: 0 },
+      baseLimits,
+    );
+    const result = tracker.recordFailure(
+      makeFailure({ stage: "VERIFICATION", findings: ["attempt 3 verification problem"] }),
+    );
+    expect(result.decision).toBe("CONTINUE");
+  });
+
   it("blocks with BLOCK_BUDGET_EXHAUSTED once correction cycles reach maxCorrectionCycles", () => {
     const tracker = new BudgetTracker(
       { implementationAttempts: 0, correctionCycles: 2 },

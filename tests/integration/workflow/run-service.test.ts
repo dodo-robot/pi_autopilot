@@ -22,8 +22,10 @@ import { PiRunError } from "../../../src/pi/pi-runner.js";
 import type { PiExecution, PiRunRequest } from "../../../src/pi/pi-runner.js";
 import { appPaths } from "../../../src/platform/paths.js";
 import { ProcessRunner } from "../../../src/platform/process-runner.js";
-import { RunService } from "../../../src/workflow/run-service.js";
+import { RunService, RunServiceError } from "../../../src/workflow/run-service.js";
 import type { RunPiRunner, RunServiceDeps } from "../../../src/workflow/run-service.js";
+import { WorkspaceError } from "../../../src/workspace/workspace-manager.js";
+import { GitHubError } from "../../../src/github/github-adapter.js";
 
 let tempDirs: string[] = [];
 
@@ -42,9 +44,16 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return result.stdout.trim();
 }
 
-/** Create a bare remote plus a primary clone with one commit, pushed to origin. */
+/**
+ * Create a bare remote plus a primary clone with one commit, pushed to
+ * origin. `verifyCommand` defaults to the standard `.verify-ok` marker
+ * check; pass a different command for a fixture whose verification
+ * failures must produce distinct evidence (e.g. a distinct exit code per
+ * attempt) rather than an identical failure every time.
+ */
 async function createFixtureRepo(
   repoName: string,
+  verifyCommand = "test -f .verify-ok",
 ): Promise<{ root: string; remote: string }> {
   const remote = mkdtempSync(path.join(tmpdir(), "ap-run-remote-"));
   tempDirs.push(remote);
@@ -66,11 +75,22 @@ commands:
   setup:
     - "true"
   verify:
-    - "test -f .verify-ok"
+    - "${verifyCommand}"
 `;
   mkdirSync(path.join(root, ".pi"), { recursive: true });
   writeFileSync(path.join(root, ".pi", "autopilot.yaml"), yaml, "utf8");
   writeFileSync(path.join(root, "README.md"), "fixture\n", "utf8");
+  if (verifyCommand === "node verify.mjs") {
+    // Exit with the value in `.attempt-count` (written by ScriptedPiRunner
+    // per implementer attempt), so consecutive verification failures
+    // produce distinct exit codes instead of an identical one.
+    writeFileSync(
+      path.join(root, "verify.mjs"),
+      "import { readFileSync } from 'node:fs';\n" +
+        "process.exitCode = Number(readFileSync('.attempt-count', 'utf8'));\n",
+      "utf8",
+    );
+  }
   await git(root, ["add", "."]);
   await git(root, ["commit", "-m", "initial"]);
   await git(root, ["push", "origin", "main"]);
@@ -189,6 +209,15 @@ class ScriptedPiRunner {
       } else {
         rmSync(markerPath, { force: true });
       }
+      // A distinct, monotonically increasing counter per call, consumed by
+      // fixtures whose verify command derives its exit code from it (so
+      // consecutive failures produce distinct budget fingerprints instead
+      // of an identical one).
+      writeFileSync(
+        path.join(request.worktree, ".attempt-count"),
+        String(this.requests.length),
+        "utf8",
+      );
     }
     return {
       result,
@@ -300,8 +329,8 @@ interface Harness {
   openRunStore: () => RunStore;
 }
 
-async function makeHarness(repoName: string): Promise<Harness> {
-  const { root } = await createFixtureRepo(repoName);
+async function makeHarness(repoName: string, verifyCommand?: string): Promise<Harness> {
+  const { root } = await createFixtureRepo(repoName, verifyCommand);
   const dataDir = mkdtempSync(path.join(tmpdir(), "ap-run-data-"));
   tempDirs.push(dataDir);
   const paths = appPaths(dataDir);
@@ -611,5 +640,116 @@ describe("RunService", () => {
     expect(summary.stage).toBe("BLOCKED");
     expect(harness.github.pulls.size).toBe(0);
     expect(harness.github.comments).toEqual([]);
+  });
+
+  it("blocks after three distinct verification failures exhaust the implementation attempt budget", async () => {
+    // The verify command's exit code is read from a counter file the
+    // implementer bumps every attempt, so each failure's exit code (and
+    // therefore its budget fingerprint) is DISTINCT. This proves the
+    // implementation attempt budget itself (not the repeated-failure
+    // fast-block) is what ends the run: without a VERIFICATION branch in
+    // BudgetTracker this would retry forever (each call would eventually
+    // throw "no scripted response left for role implementer").
+    const harness = await makeHarness(
+      "run-fixture-verify-attempts-exhausted",
+      "node verify.mjs",
+    );
+    harness.pi.script("refiner", [
+      taskSnapshotRefiner("run-fixture-verify-attempts-exhausted"),
+    ]);
+    harness.pi.script("implementer", [
+      { result: implementerCompleted({ summary: "Attempt 1." }), passVerification: false },
+      { result: implementerCompleted({ summary: "Attempt 2." }), passVerification: false },
+      { result: implementerCompleted({ summary: "Attempt 3." }), passVerification: false },
+    ]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("BLOCKED");
+    expect(summary.reason).toContain("implementation attempts exhausted");
+    // Exactly three implementer attempts ran (the budget, not a repeated
+    // fingerprint, stopped the run) and no reviewer session was ever launched.
+    expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(3);
+    expect(harness.pi.requests.filter((r) => r.role === "reviewer")).toEqual([]);
+    expect(harness.github.pulls.size).toBe(0);
+  });
+
+  it("rejects starting a run when an active run already exists for the issue", async () => {
+    const harness = await makeHarness("run-fixture-active-run");
+    // Seed a run already sitting in a non-terminal stage (IMPLEMENTATION) for
+    // this issue directly through the store, exactly as a real in-progress
+    // run would leave it. start() must reject before doing any work.
+    const runStore = harness.openRunStore();
+    const existing = runStore.createRun({
+      id: "run-existing",
+      repository: { owner: "acme", repo: "run-fixture-active-run" },
+      issueNumber: 42,
+    });
+    runStore.transition(existing.id, "PREFLIGHT", "READINESS_CHECK", null);
+    runStore.transition(existing.id, "READINESS_CHECK", "WORKSPACE_CREATION", null);
+    runStore.transition(existing.id, "WORKSPACE_CREATION", "IMPLEMENTATION", null);
+    runStore.close();
+
+    const service = new RunService(harness.deps);
+
+    await expect(service.start(42)).rejects.toThrow(RunServiceError);
+    await expect(service.start(42)).rejects.toThrow(/active run already exists/);
+    // No new session was launched for the rejected attempt.
+    expect(harness.pi.requests).toEqual([]);
+  });
+
+  it("transitions a run to FAILED when readiness fails with a non-PiRunError exception", async () => {
+    const harness = await makeHarness("run-fixture-github-error");
+    const failingGithub: typeof harness.github = harness.github;
+    failingGithub.getIssue = async () => {
+      throw new GitHubError("GitHub API rate limit exceeded");
+    };
+
+    const service = new RunService(harness.deps);
+
+    await expect(service.start(42)).rejects.toThrow(GitHubError);
+
+    const runStore = harness.openRunStore();
+    const active = runStore.getActiveRunForIssue("acme", "run-fixture-github-error", 42);
+    expect(active).toBeNull();
+    const runs = runStore.listNonterminalRuns();
+    expect(runs).toEqual([]);
+    runStore.close();
+
+    // The issue must be runnable again: a fresh start() call is not rejected
+    // as "active" (the failed run reached the terminal FAILED stage).
+    harness.github.getIssue = async () => ({ ...ISSUE });
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-github-error")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    const retryDeps: RunServiceDeps = { ...harness.deps, idFactory: () => "run-test-2" };
+    const retryService = new RunService(retryDeps);
+    const retry = await retryService.start(42);
+    expect(retry.stage).toBe("PR_OPEN");
+  });
+
+  it("transitions a run to FAILED when workspace creation throws a non-PiRunError exception", async () => {
+    const harness = await makeHarness("run-fixture-workspace-error");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-workspace-error")]);
+
+    const brokenProcessRunner: ProcessRunner = {
+      run: async (request) => {
+        if (request.args.includes("worktree") && request.args.includes("add")) {
+          throw new WorkspaceError("failed to create git worktree");
+        }
+        return harness.deps.processRunner!.run(request);
+      },
+    };
+    const deps: RunServiceDeps = { ...harness.deps, processRunner: brokenProcessRunner };
+
+    const service = new RunService(deps);
+
+    await expect(service.start(42)).rejects.toThrow(WorkspaceError);
+
+    const runStore = harness.openRunStore();
+    const active = runStore.getActiveRunForIssue("acme", "run-fixture-workspace-error", 42);
+    expect(active).toBeNull();
+    runStore.close();
   });
 });

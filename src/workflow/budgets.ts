@@ -116,7 +116,13 @@ export class BudgetTracker {
     }
     this.seenFingerprints.add(fingerprint);
 
-    if (failure.stage === "IMPLEMENTATION") {
+    // A VERIFICATION failure is spent against the same implementation
+    // attempt budget as an IMPLEMENTATION-stage failure: both mean "the
+    // implementer's most recent attempt did not produce acceptable work"
+    // and both trigger another implementer session. Without this branch a
+    // run whose verification fails differently every time (so the repeated-
+    // fingerprint check never fires) would retry forever.
+    if (failure.stage === "IMPLEMENTATION" || failure.stage === "VERIFICATION") {
       if (this.counters.implementationAttempts >= this.limits.implementation.maxAttempts) {
         return {
           decision: "BLOCK_BUDGET_EXHAUSTED",

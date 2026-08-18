@@ -265,11 +265,18 @@ class RunAttempt {
     try {
       return await this.run();
     } catch (error) {
+      // Fail closed for ANY thrown error, not just a malformed/abnormal role
+      // session (PiRunError): a GitHubError, WorkspaceError,
+      // VerificationRunnerError, PublicationError, RunStoreError, or a bare
+      // git/fs error from any dependency can surface here too. Leaving the
+      // run parked at a non-terminal stage would make it permanently
+      // "active" (see `RunStore.getActiveRunForIssue`), blocking any retry
+      // for this issue forever and putting it out of reach of admin resume
+      // (which only acts on BLOCKED runs). Persist FAILED from whatever
+      // stage the run was in, then rethrow so the caller still observes
+      // the original error.
+      this.transition("FAILED", null);
       if (error instanceof PiRunError) {
-        // A malformed/abnormal role session is an orchestrator-level
-        // failure, not a role outcome: persist FAILED from whatever stage
-        // the run was in when the session was launched.
-        this.transition("FAILED", null);
         return this.summary({ reason: error.message });
       }
       throw error;
@@ -462,6 +469,15 @@ class RunAttempt {
       return this.summary({ reason: result.reason });
     }
     if (result.outcome === "NEEDS_REPLAN") {
+      // Ruling (M1, deliberate): NEEDS_REPLAN maps to BLOCKED, not to any
+      // form of automatic retry or re-planning. M1 has no dynamic
+      // replanning capability (deferred to M5 per spec Section 16); when
+      // an implementer signals that the frozen task snapshot cannot be
+      // satisfied as written, it must stop explicitly rather than guess.
+      // BLOCKED is the correct M1 terminal here because it is quiescent
+      // and requires human intervention (admin RESUME) to continue --
+      // re-planning the task is a human action, out of scope for this
+      // milestone's automatic orchestration.
       this.transition("BLOCKED", ref.relative);
       return this.summary({ reason: result.reason });
     }
