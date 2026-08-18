@@ -79,6 +79,30 @@ export interface TransitionRecord {
   createdAt: string;
 }
 
+/** Durable publication evidence for one run: commit, branch, PR, and comment identity. */
+export interface PublicationRecord {
+  id: number;
+  runId: string;
+  commitSha: string | null;
+  branch: string;
+  prNumber: number | null;
+  prUrl: string | null;
+  commentMarker: string | null;
+  commentId: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Partial publication fields to persist; only provided fields are written. */
+export interface RecordPublicationInput {
+  branch?: string;
+  commitSha?: string | null;
+  prNumber?: number | null;
+  prUrl?: string | null;
+  commentMarker?: string | null;
+  commentId?: number | null;
+}
+
 interface RunRow {
   id: string;
   owner: string;
@@ -111,6 +135,19 @@ interface TransitionRow {
   to_stage: string;
   evidence_ref: string | null;
   created_at: string;
+}
+
+interface PublicationRow {
+  id: number;
+  run_id: string;
+  commit_sha: string | null;
+  branch: string;
+  pr_number: number | null;
+  pr_url: string | null;
+  comment_marker: string | null;
+  comment_id: number | null;
+  created_at: string;
+  updated_at: string;
 }
 
 function mapRunRow(row: RunRow): RunRecord {
@@ -149,6 +186,21 @@ function mapTransitionRow(row: TransitionRow): TransitionRecord {
     to: RunStageSchema.parse(row.to_stage),
     evidenceRef: row.evidence_ref,
     createdAt: row.created_at,
+  };
+}
+
+function mapPublicationRow(row: PublicationRow): PublicationRecord {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    commitSha: row.commit_sha,
+    branch: row.branch,
+    prNumber: row.pr_number,
+    prUrl: row.pr_url,
+    commentMarker: row.comment_marker,
+    commentId: row.comment_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -356,6 +408,80 @@ export class RunStore {
       )
       .all(runId) as unknown as TransitionRow[];
     return rows.map(mapTransitionRow);
+  }
+
+  /**
+   * Record or update the publication evidence for a run. Idempotent by
+   * `run_id`: the first call must supply `branch` and inserts a new row;
+   * every subsequent call merges only the fields it provides onto the
+   * existing row, so callers can persist commit SHA, then PR identity,
+   * then comment identity as each becomes durable, without clobbering
+   * fields recorded earlier.
+   */
+  recordPublication(
+    runId: string,
+    input: RecordPublicationInput,
+  ): PublicationRecord {
+    const now = this.now();
+    const existing = this.getPublication(runId);
+
+    if (existing === null) {
+      if (input.branch === undefined) {
+        throw new RunStoreError(
+          `cannot record publication for run ${runId}: branch is required on first write`,
+        );
+      }
+      this.db
+        .prepare(
+          `INSERT INTO publications
+             (run_id, commit_sha, branch, pr_number, pr_url, comment_marker, comment_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          runId,
+          input.commitSha ?? null,
+          input.branch,
+          input.prNumber ?? null,
+          input.prUrl ?? null,
+          input.commentMarker ?? null,
+          input.commentId ?? null,
+          now,
+          now,
+        );
+    } else {
+      this.db
+        .prepare(
+          `UPDATE publications SET
+             commit_sha = ?, branch = ?, pr_number = ?, pr_url = ?,
+             comment_marker = ?, comment_id = ?, updated_at = ?
+           WHERE run_id = ?`,
+        )
+        .run(
+          input.commitSha !== undefined ? input.commitSha : existing.commitSha,
+          input.branch ?? existing.branch,
+          input.prNumber !== undefined ? input.prNumber : existing.prNumber,
+          input.prUrl !== undefined ? input.prUrl : existing.prUrl,
+          input.commentMarker !== undefined
+            ? input.commentMarker
+            : existing.commentMarker,
+          input.commentId !== undefined ? input.commentId : existing.commentId,
+          now,
+          runId,
+        );
+    }
+
+    const record = this.getPublication(runId);
+    if (record === null) {
+      throw new RunStoreError(`failed to record publication for run ${runId}`);
+    }
+    return record;
+  }
+
+  getPublication(runId: string): PublicationRecord | null {
+    const row = this.db
+      .prepare(`SELECT * FROM publications WHERE run_id = ?`)
+      .get(runId) as PublicationRow | undefined;
+    return row === undefined ? null : mapPublicationRow(row);
   }
 
   private getAttempt(id: string): AttemptRecord | null {
