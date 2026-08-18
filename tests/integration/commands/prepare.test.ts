@@ -242,6 +242,15 @@ describe("autopilot prepare", () => {
 
     expect(harness.exitCodes).toEqual([0]);
     expect(harness.stdoutLines.join("\n")).toContain("Applied");
+    // The proposed diff must be shown before the approval prompt, not
+    // hidden while the operator approves a blind edit.
+    const stdout = harness.stdoutLines.join("\n");
+    expect(stdout).toContain("Proposed refinement:");
+    expect(stdout).toContain("--- original");
+    expect(stdout).toContain("+### Goal");
+    expect(stdout.indexOf("Proposed refinement:")).toBeLessThan(
+      stdout.indexOf("Applied"),
+    );
     const updateCalls = github.calls.filter(
       (call) => call === "updateIssueBody",
     );

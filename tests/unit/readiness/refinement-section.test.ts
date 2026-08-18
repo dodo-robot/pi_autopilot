@@ -108,8 +108,18 @@ describe("upsertRefinementSection", () => {
     );
   });
 
-  it("rejects a start marker followed by nothing before a later end marker", () => {
+  it("rejects an unbalanced start marker without a matching end marker", () => {
     const body = `text ${REFINEMENT_START} more text`;
+    expect(() => upsertRefinementSection(body, draft())).toThrow(
+      RefinementSectionError,
+    );
+  });
+
+  it("rejects an end marker that appears before the start marker", () => {
+    // Equal marker counts (1 each), but the end marker precedes the start,
+    // so the search for a later end marker fails: exercises the reversed-
+    // marker branch (endIndex === -1) rather than the balance branch.
+    const body = `${REFINEMENT_END}\n${REFINEMENT_START}`;
     expect(() => upsertRefinementSection(body, draft())).toThrow(
       RefinementSectionError,
     );
@@ -188,6 +198,17 @@ describe("renderUnifiedDiff", () => {
 
   it("prefixes every line in a replacement diff", () => {
     const diff = renderUnifiedDiff("old line", "new line");
+    expect(diff).toContain("-old line");
+    expect(diff).toContain("+new line");
+  });
+
+  it("uses a canonical hunk range when the first change is not on line 1", () => {
+    const diff = renderUnifiedDiff(
+      "keep one\nkeep two\nold line",
+      "keep one\nkeep two\nnew line",
+    );
+    expect(diff).toContain("@@ -1,3 +1,3 @@");
+    expect(diff).toContain(" keep one");
     expect(diff).toContain("-old line");
     expect(diff).toContain("+new line");
   });

@@ -86,7 +86,7 @@ export function registerPrepareCommand(
         process.exitCode = code;
       });
       try {
-        const outcome = await runPrepare(issueRef, opts, deps);
+        const outcome = await runPrepare(issueRef, opts, deps, stdout);
         if (opts.json === true) {
           stdout(JSON.stringify(outcome, null, 2));
         } else {
@@ -106,6 +106,7 @@ async function runPrepare(
   issueRef: string,
   opts: PrepareOptions,
   deps: PrepareCommandDeps,
+  stdout: (text: string) => void,
 ): Promise<PrepareOutcome> {
   const runner = deps.processRunner ?? new ProcessRunnerImpl();
   const ctx = await resolveRepositoryContext(deps.cwd ?? process.cwd(), runner);
@@ -150,6 +151,8 @@ async function runPrepare(
     };
   }
 
+  stdout("Proposed refinement:");
+  stdout(diff);
   const confirm = deps.confirm ?? defaultConfirm;
   const approved = await confirm(`Apply the proposed refinement to issue #${number}?`);
   if (!approved) {

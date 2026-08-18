@@ -209,10 +209,13 @@ export function renderUnifiedDiff(original: string, updated: string): string {
     return lines.join("\n");
   }
 
-  const firstChange = ops.findIndex((op) => op.type !== "equal");
   const originalCount = ops.filter((op) => op.type !== "add").length;
   const updatedCount = ops.filter((op) => op.type !== "remove").length;
-  lines.push(`@@ -${firstChange + 1},${originalCount} +${firstChange + 1},${updatedCount} @@`);
+  // Canonical unified-diff range for a single full-file hunk: the hunk
+  // starts at line 1 of each side (0 when a side is empty).
+  const originalStart = originalCount === 0 ? 0 : 1;
+  const updatedStart = updatedCount === 0 ? 0 : 1;
+  lines.push(`@@ -${originalStart},${originalCount} +${updatedStart},${updatedCount} @@`);
   for (const op of ops) {
     if (op.type === "equal") lines.push(` ${op.text}`);
     else if (op.type === "remove") lines.push(`-${op.text}`);
