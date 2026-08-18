@@ -5,8 +5,10 @@ import type { CheckCommandDeps } from "./commands/check.js";
 import { registerCheckCommand } from "./commands/check.js";
 import type { PrepareCommandDeps } from "./commands/prepare.js";
 import { registerPrepareCommand } from "./commands/prepare.js";
+import type { RunCommandDeps } from "./commands/run.js";
+import { registerRunCommand } from "./commands/run.js";
 
-export type CliDeps = CheckCommandDeps & PrepareCommandDeps;
+export type CliDeps = CheckCommandDeps & PrepareCommandDeps & RunCommandDeps;
 
 /**
  * Build the autopilot CLI. Dependencies are injectable so command tests can
@@ -20,6 +22,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .version("0.1.0");
   registerCheckCommand(program, deps);
   registerPrepareCommand(program, deps);
+  registerRunCommand(program, deps);
   return program;
 }
 
