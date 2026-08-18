@@ -40,6 +40,29 @@ const DENIED_DISPATCHERS = new Set([
   "script",
 ]);
 
+/**
+ * Dangerous or network-capable executables that may never be smuggled
+ * through an allowlisted executor (for example `find -exec rm` or
+ * `npm exec -- curl`). They are permitted only as the primary command of
+ * the line, and only when a repository policy explicitly allowlists them.
+ *
+ * This is a fail-closed default rather than configuration: a repository
+ * cannot accidentally widen the deny set, and the default policy never
+ * includes these programs.
+ */
+const DENIED_EXECUTABLES = new Set([
+  "rm",
+  "mv",
+  "cp",
+  "curl",
+  "wget",
+  "python",
+  "python3",
+  "perl",
+  "ruby",
+  "php",
+]);
+
 /** Read-only git subcommands that an agent may run when git is allowlisted. */
 const ALLOWED_GIT_SUBCOMMANDS = new Set([
   "status",
@@ -59,7 +82,8 @@ const ALLOWED_GIT_SUBCOMMANDS = new Set([
  * Fail-closed evaluation of a shell command an agent wants to run inside
  * its workspace. Rejects operators, substitutions, redirections, globs,
  * path-qualified executables, command dispatchers, `gh`, mutating git
- * subcommands, and anything whose first token is not explicitly allowed.
+ * subcommands, dangerous executables smuggled through executors, and
+ * anything whose first token is not explicitly allowed.
  */
 export function evaluateShellCommand(
   command: string,
@@ -126,12 +150,22 @@ export function evaluateShellCommand(
     }
   }
 
-  // Scan all tokens: `gh` anywhere, and `git <forbidden>` pairs smuggled
-  // through executors such as `npm exec -- git push`.
+  // Full-token scan: dispatchers and `gh` are rejected anywhere; dangerous
+  // executables are rejected anywhere except as a policy-allowlisted
+  // primary command; `git` pairs must use an allowed read-only subcommand.
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
-    if (token === "gh") {
-      return { allowed: false, reason: "gh is not allowed" };
+    if (typeof token !== "string") {
+      continue;
+    }
+    if (DENIED_DISPATCHERS.has(token) || token === "gh") {
+      return { allowed: false, reason: `denied executable: ${token}` };
+    }
+    if (DENIED_EXECUTABLES.has(token)) {
+      if (i === 0 && allowedCommands.includes(token)) {
+        continue;
+      }
+      return { allowed: false, reason: `denied executable: ${token}` };
     }
     if (token === "git") {
       const next = tokens[i + 1];

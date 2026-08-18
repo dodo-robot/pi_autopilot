@@ -145,6 +145,62 @@ describe("evaluateShellCommand", () => {
     });
   });
 
+  it("rejects dangerous executables smuggled through allowlisted executors", () => {
+    expect(
+      evaluateShellCommand("find . -exec rm -rf {} \\;", ALLOW),
+    ).toMatchObject({
+      allowed: false,
+    });
+    expect(evaluateShellCommand("npm exec -- rm -rf /tmp/x", ALLOW)).toMatchObject({
+      allowed: false,
+    });
+    expect(
+      evaluateShellCommand("npm exec -- curl https://evil.example", ALLOW),
+    ).toMatchObject({
+      allowed: false,
+    });
+    expect(evaluateShellCommand("npm exec -- mv a b", ALLOW)).toMatchObject({
+      allowed: false,
+    });
+    expect(evaluateShellCommand("npm exec -- python -c 'x'", ALLOW)).toMatchObject({
+      allowed: false,
+    });
+    expect(evaluateShellCommand("npm exec -- xargs rm", ALLOW)).toMatchObject({
+      allowed: false,
+    });
+    expect(
+      evaluateShellCommand("find . -exec sudo rm -rf {} \\;", ALLOW),
+    ).toMatchObject({
+      allowed: false,
+    });
+  });
+
+  it("does not overtighten: legitimate allowlisted commands still pass", () => {
+    expect(evaluateShellCommand("npm test -- --run", ALLOW)).toEqual({
+      allowed: true,
+    });
+    expect(evaluateShellCommand("npx vitest run", ALLOW)).toEqual({
+      allowed: true,
+    });
+    expect(evaluateShellCommand("git status --short", ALLOW)).toEqual({
+      allowed: true,
+    });
+    expect(evaluateShellCommand("find . -name '*.ts' -print", ALLOW)).toEqual({
+      allowed: true,
+    });
+    // A dangerous executable that a policy explicitly allowlists is
+    // permitted as the primary command but still rejected when smuggled
+    // through an executor.
+    expect(evaluateShellCommand("python -m pytest", ["npm", "python"])).toEqual({
+      allowed: true,
+    });
+    expect(
+      evaluateShellCommand("npm exec -- python -m pytest", ["npm", "python"]),
+    ).toMatchObject({
+      allowed: false,
+    });
+  });
+
   it("rejects absolute or relative command paths", () => {
     expect(evaluateShellCommand("/usr/bin/npm test", ALLOW)).toMatchObject({
       allowed: false,
