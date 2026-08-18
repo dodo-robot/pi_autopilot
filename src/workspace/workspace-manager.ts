@@ -129,6 +129,23 @@ export class WorkspaceManager {
   }
 
   /**
+   * Deterministically reconstruct the `Workspace` for a run that already
+   * has a worktree, without creating anything or touching Git. Recovery
+   * and resume use this to relocate a preserved workspace by run id and
+   * the same issue number/title/base branch that were used to create it
+   * originally (`create` derives the path and branch from exactly these
+   * inputs, so recomputing them here yields the identical values).
+   */
+  locate(request: CreateWorkspaceRequest): Workspace {
+    return {
+      runId: request.runId,
+      path: path.join(this.worktreeParent(), request.runId),
+      branch: this.branchName(request.issueNumber, request.title),
+      baseBranch: request.baseBranch,
+    };
+  }
+
+  /**
    * Create a sibling worktree on a fresh branch for one run. Refuses a
    * dirty primary checkout (when required), a base branch mismatch, a
    * branch already owned by another run, or a path already registered to

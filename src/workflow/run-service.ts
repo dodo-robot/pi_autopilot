@@ -200,6 +200,130 @@ export class RunService {
       runStore.close();
     }
   }
+
+  /**
+   * Administrative resume: continue a `BLOCKED` run with a fresh,
+   * transcript-free correction session in its preserved workspace. Only
+   * a run currently in `BLOCKED` may be resumed — this is the sole
+   * quiescent stage with a legal `RESUME` exit (see `state-machine.ts`);
+   * any other stage (including every terminal stage) is rejected before
+   * anything else runs. The frozen task snapshot and existing worktree
+   * are reused exactly as they were left; readiness and workspace
+   * creation are never re-entered.
+   */
+  async resume(runId: string, overrides: RunOverrides = {}): Promise<RunSummary> {
+    const runner = this.deps.processRunner ?? new ProcessRunnerImpl();
+    const ctx =
+      this.deps.createRepositoryContext !== undefined
+        ? await this.deps.createRepositoryContext(this.deps.cwd ?? process.cwd(), runner)
+        : await resolveRepositoryContext(this.deps.cwd ?? process.cwd(), runner);
+    const config = await loadRepositoryConfig(ctx.root);
+
+    const github =
+      this.deps.createGitHub !== undefined
+        ? await this.deps.createGitHub(ctx, runner)
+        : await GitHubAdapter.create(ctx.root, runner);
+
+    const pi: RunPiRunner =
+      this.deps.createPi !== undefined
+        ? this.deps.createPi(runner)
+        : new PiRunner(runner, this.deps.piCommand);
+
+    const paths: AppPaths = appPaths(this.deps.dataDir);
+    const artifacts = new ArtifactStore(paths);
+    const runStore = new RunStore(paths.dbPath);
+
+    const piDefault = this.deps.piDefaultModel ?? DEFAULT_PI_MODEL;
+    const refinerModel = resolveRoleModel(
+      "refiner",
+      overrides.refiner ?? null,
+      config.agents,
+      null,
+      piDefault,
+    );
+    const implementerModel = resolveRoleModel(
+      "implementer",
+      overrides.implementer ?? null,
+      config.agents,
+      null,
+      piDefault,
+    );
+    const reviewerModel = resolveRoleModel(
+      "reviewer",
+      overrides.reviewer ?? null,
+      config.agents,
+      null,
+      piDefault,
+    );
+
+    try {
+      const run = runStore.getRun(runId);
+      if (run === null) {
+        throw new RunServiceError(`no run found with id ${runId}`);
+      }
+      if (run.stage !== "BLOCKED") {
+        throw new RunServiceError(
+          `cannot resume run ${runId}: stage is ${run.stage}, not BLOCKED`,
+        );
+      }
+      if (run.taskSnapshotRef === null) {
+        throw new RunServiceError(
+          `cannot resume run ${runId}: no task snapshot was ever recorded`,
+        );
+      }
+
+      const snapshot = await artifacts.readJson<TaskSnapshot>(
+        runId,
+        run.taskSnapshotRef,
+      );
+
+      const workspaceManager = new WorkspaceManager({
+        processRunner: runner,
+        repository: ctx,
+        policy: config.workspace,
+      });
+      const workspace = workspaceManager.locate({
+        runId,
+        issueNumber: run.issueNumber,
+        title: snapshot.objective,
+        baseBranch: config.workspace.baseBranch,
+      });
+      const status = await workspaceManager.inspect(workspace);
+      if (!status.exists) {
+        throw new RunServiceError(
+          `cannot resume run ${runId}: workspace no longer exists at ${workspace.path}`,
+        );
+      }
+
+      const existingAttempts = runStore.listAttempts(runId);
+      const initialCounters: BudgetCounters = {
+        implementationAttempts: existingAttempts.filter((a) => a.role === "implementer").length,
+        correctionCycles: existingAttempts.filter((a) => a.role === "reviewer").length,
+      };
+      const initialAttemptSequence = existingAttempts.length;
+
+      const attempt = new RunAttempt({
+        run,
+        runStore,
+        artifacts,
+        paths,
+        github,
+        pi,
+        processRunner: runner,
+        repository: ctx,
+        config,
+        refinerModel,
+        implementerModel,
+        reviewerModel,
+        initialCounters,
+        initialAttemptSequence,
+      });
+
+      return await attempt.executeResume(snapshot, workspace);
+    } finally {
+      runStore.close();
+    }
+  }
 }
 
 interface RunAttemptDeps {
@@ -215,13 +339,24 @@ interface RunAttemptDeps {
   refinerModel: ResolvedRoleModel;
   implementerModel: ResolvedRoleModel;
   reviewerModel: ResolvedRoleModel;
+  /**
+   * Preloaded budget counters for a resumed run (attempts/cycles already
+   * consumed before the interruption). Defaults to zero for a fresh run
+   * started by `start()`.
+   */
+  initialCounters?: BudgetCounters;
+  /**
+   * The next attempt sequence number to assign (one past the highest
+   * persisted attempt). Defaults to 0 for a fresh run.
+   */
+  initialAttemptSequence?: number;
 }
 
 /** One run's execution, from readiness through publication. */
 class RunAttempt {
   private stage: RunStage;
   private readonly runId: string;
-  private attemptSequence = 0;
+  private attemptSequence: number;
   /**
    * Single mutable counters object shared with `BudgetTracker`, which
    * reads `this.counters` by reference on every `recordFailure` call.
@@ -230,16 +365,20 @@ class RunAttempt {
    * (zero) state, since `BudgetTracker` never re-reads its constructor
    * argument's fields — it must be the same object instance that this
    * class mutates in place as attempts and correction cycles accrue.
+   * A resumed run seeds these from `initialCounters` (attempts/cycles
+   * already consumed before the interruption) instead of starting at zero.
    */
-  private readonly counters: BudgetCounters = {
-    implementationAttempts: 0,
-    correctionCycles: 0,
-  };
+  private readonly counters: BudgetCounters;
   private readonly budgets: BudgetTracker;
 
   constructor(private readonly deps: RunAttemptDeps) {
     this.stage = deps.run.stage;
     this.runId = deps.run.id;
+    this.attemptSequence = deps.initialAttemptSequence ?? 0;
+    this.counters = deps.initialCounters ?? {
+      implementationAttempts: 0,
+      correctionCycles: 0,
+    };
     this.budgets = new BudgetTracker(this.counters, deps.config.budgets);
   }
 
@@ -262,19 +401,63 @@ class RunAttempt {
   }
 
   async execute(): Promise<RunSummary> {
+    return await this.runFailClosed(() => this.run());
+  }
+
+  /**
+   * Administrative resume: launch one fresh correction attempt in the
+   * preserved workspace for a run that was `BLOCKED`. Never re-enters
+   * readiness or workspace creation — the frozen task snapshot and the
+   * existing worktree are reused exactly as they were left. Wraps the
+   * same fail-closed error handling as `execute()`.
+   */
+  async executeResume(
+    snapshot: TaskSnapshot,
+    workspace: Workspace,
+  ): Promise<RunSummary> {
+    return await this.runFailClosed(() => {
+      const workspaceManager = new WorkspaceManager({
+        processRunner: this.deps.processRunner,
+        repository: this.deps.repository,
+        policy: this.deps.config.workspace,
+      });
+      const verificationRunner = new VerificationRunner({
+        processRunner: this.deps.processRunner,
+        artifacts: this.deps.artifacts,
+        workspaceManager,
+      });
+
+      this.transition("IMPLEMENTATION", null);
+
+      return this.runImplementationLoop(
+        snapshot,
+        workspace,
+        workspaceManager,
+        verificationRunner,
+        buildResumeCorrectionPrompt(snapshot),
+      );
+    });
+  }
+
+  /**
+   * Fail closed for ANY thrown error, not just a malformed/abnormal role
+   * session (PiRunError): a GitHubError, WorkspaceError,
+   * VerificationRunnerError, PublicationError, RunStoreError, or a bare
+   * git/fs error from any dependency can surface here too. Leaving the
+   * run parked at a non-terminal stage would make it permanently "active"
+   * (see `RunStore.getActiveRunForIssue`), blocking any retry for this
+   * issue forever and putting it out of reach of admin resume (which only
+   * acts on BLOCKED runs). Persist FAILED from whatever stage the run was
+   * in, then rethrow so the caller still observes the original error.
+   * Shared by `execute()` and `executeResume()`, the only two entry
+   * points that can leave a run running.
+   */
+  private async runFailClosed(
+    body: () => Promise<RunSummary>,
+  ): Promise<RunSummary> {
     try {
-      return await this.run();
+      return await body();
     } catch (error) {
-      // Fail closed for ANY thrown error, not just a malformed/abnormal role
-      // session (PiRunError): a GitHubError, WorkspaceError,
-      // VerificationRunnerError, PublicationError, RunStoreError, or a bare
-      // git/fs error from any dependency can surface here too. Leaving the
-      // run parked at a non-terminal stage would make it permanently
-      // "active" (see `RunStore.getActiveRunForIssue`), blocking any retry
-      // for this issue forever and putting it out of reach of admin resume
-      // (which only acts on BLOCKED runs). Persist FAILED from whatever
-      // stage the run was in, then rethrow so the caller still observes
-      // the original error.
       this.transition("FAILED", null);
       if (error instanceof PiRunError) {
         return this.summary({ reason: error.message });
@@ -369,8 +552,9 @@ class RunAttempt {
     workspace: Workspace,
     workspaceManager: WorkspaceManager,
     verificationRunner: VerificationRunner,
+    initialPrompt?: string,
   ): Promise<RunSummary> {
-    let prompt = buildImplementerPrompt(snapshot);
+    let prompt = initialPrompt ?? buildImplementerPrompt(snapshot);
 
     for (;;) {
       const implementerResult = await this.launchImplementer(snapshot, workspace, prompt);
@@ -676,6 +860,23 @@ function buildImplementerPrompt(snapshot: TaskSnapshot): string {
   return [
     "You are the implementer for a bounded, supervised task.",
     "Implement exactly the task snapshot below. Report COMPLETED only when done.",
+    JSON.stringify(snapshot, null, 2),
+  ].join("\n\n");
+}
+
+/**
+ * Prompt for an administratively resumed run: a fresh implementer session
+ * with no access to any prior transcript, told only the frozen task
+ * snapshot (the run was BLOCKED, so there is no verification/review
+ * evidence from the interrupted attempt to hand it — that evidence, if
+ * still valid, is reconciled separately by `RecoveryService`).
+ */
+function buildResumeCorrectionPrompt(snapshot: TaskSnapshot): string {
+  return [
+    "You are the implementer resuming a bounded, supervised task after an",
+    "administrative pause. Continue exactly the task snapshot below using",
+    "only the current worktree state. You have no access to any prior",
+    "session transcript. Report COMPLETED only when done.",
     JSON.stringify(snapshot, null, 2),
   ].join("\n\n");
 }

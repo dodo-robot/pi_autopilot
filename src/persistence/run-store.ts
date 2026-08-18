@@ -410,6 +410,16 @@ export class RunStore {
     return rows.map(mapTransitionRow);
   }
 
+  /** Every attempt recorded for a run, in the order they were launched. */
+  listAttempts(runId: string): AttemptRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM attempts WHERE run_id = ? ORDER BY attempt_number`,
+      )
+      .all(runId) as unknown as AttemptRow[];
+    return rows.map(mapAttemptRow);
+  }
+
   /**
    * Record or update the publication evidence for a run. Idempotent by
    * `run_id`: the first call must supply `branch` and inserts a new row;

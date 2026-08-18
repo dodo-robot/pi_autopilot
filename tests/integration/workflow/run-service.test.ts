@@ -753,3 +753,69 @@ describe("RunService", () => {
     runStore.close();
   });
 });
+
+describe("RunService.resume", () => {
+  it("launches a fresh correction session in the preserved workspace and reaches PR_OPEN", async () => {
+    const harness = await makeHarness("run-fixture-resume");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-resume")]);
+    harness.pi.script("implementer", [
+      implementerBlocked("missing credentials"),
+    ]);
+
+    const service = new RunService(harness.deps);
+    const blocked = await service.start(42);
+    expect(blocked.stage).toBe("BLOCKED");
+
+    // Resume with a fresh implementer response that completes the work.
+    harness.pi.script("implementer", [implementerCompleted({ summary: "Resumed and finished." })]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+
+    const resumed = await service.resume(blocked.runId);
+
+    expect(resumed.stage).toBe("PR_OPEN");
+    const runStore = harness.openRunStore();
+    const transitions = runStore.transitions(blocked.runId).map((t) => t.to);
+    // The original BLOCKED transition is preserved in history, followed by
+    // the resumed correction cycle through to publication.
+    expect(transitions).toEqual([
+      "READINESS_CHECK",
+      "WORKSPACE_CREATION",
+      "IMPLEMENTATION",
+      "BLOCKED",
+      "IMPLEMENTATION",
+      "VERIFICATION",
+      "INDEPENDENT_REVIEW",
+      "PUBLICATION",
+      "PR_OPEN",
+    ]);
+    // A fresh implementer session ran with no prior-transcript reference:
+    // exactly one implementer request was issued for the resumed attempt,
+    // and it does not reference the original BLOCKED session's directories.
+    const implementerRequests = harness.pi.requests.filter((r) => r.role === "implementer");
+    expect(implementerRequests).toHaveLength(2);
+    expect(implementerRequests[1]!.sessionDir).not.toBe(implementerRequests[0]!.sessionDir);
+    runStore.close();
+  });
+
+  it("rejects resuming a run that is not BLOCKED", async () => {
+    const harness = await makeHarness("run-fixture-resume-not-blocked");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-resume-not-blocked")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+    expect(summary.stage).toBe("PR_OPEN");
+
+    await expect(service.resume(summary.runId)).rejects.toThrow(RunServiceError);
+    await expect(service.resume(summary.runId)).rejects.toThrow(/not BLOCKED/);
+  });
+
+  it("rejects resuming an unknown run id", async () => {
+    const harness = await makeHarness("run-fixture-resume-unknown");
+    const service = new RunService(harness.deps);
+
+    await expect(service.resume("no-such-run")).rejects.toThrow(RunServiceError);
+    await expect(service.resume("no-such-run")).rejects.toThrow(/no run found/);
+  });
+});
