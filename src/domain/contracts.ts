@@ -116,6 +116,7 @@ export const RefinerResultSchema = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("FAILED"),
     reason: z.string().min(1),
+    taskDraft: TaskDraftSchema,
   }),
 ]);
 export type RefinerResult = z.infer<typeof RefinerResultSchema>;
