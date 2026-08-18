@@ -3,8 +3,10 @@ import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import type { CheckCommandDeps } from "./commands/check.js";
 import { registerCheckCommand } from "./commands/check.js";
+import type { PrepareCommandDeps } from "./commands/prepare.js";
+import { registerPrepareCommand } from "./commands/prepare.js";
 
-export type CliDeps = CheckCommandDeps;
+export type CliDeps = CheckCommandDeps & PrepareCommandDeps;
 
 /**
  * Build the autopilot CLI. Dependencies are injectable so command tests can
@@ -17,6 +19,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .description("Autonomous development orchestration for Pi")
     .version("0.1.0");
   registerCheckCommand(program, deps);
+  registerPrepareCommand(program, deps);
   return program;
 }
 

@@ -1,0 +1,362 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { AutopilotConfig } from "../../../src/config/schema.js";
+import type { ResolvedRoleModel } from "../../../src/config/load-config.js";
+import type { RefinerResult, TaskDraft } from "../../../src/domain/contracts.js";
+import type { GitHubIssue, GitHubPort } from "../../../src/github/github-adapter.js";
+import { safeProcessEnv } from "../../../src/github/repository-context.js";
+import type { RepositoryContext } from "../../../src/github/repository-context.js";
+import { ArtifactStore } from "../../../src/persistence/artifact-store.js";
+import type { PiExecution, PiRunRequest } from "../../../src/pi/pi-runner.js";
+import { ProcessRunner } from "../../../src/platform/process-runner.js";
+import { appPaths } from "../../../src/platform/paths.js";
+import { ReadinessService } from "../../../src/readiness/readiness-service.js";
+import type { RefinerRunner } from "../../../src/readiness/readiness-service.js";
+import { REFINEMENT_START } from "../../../src/readiness/refinement-section.js";
+import { buildProgram } from "../../../src/cli.js";
+import type { PrepareCommandDeps } from "../../../src/commands/prepare.js";
+
+const MINIMAL_YAML = `version: 1
+commands:
+  setup:
+    - npm ci
+  verify:
+    - npm test
+`;
+
+const ISSUE_BODY =
+  "Original issue body text.\n\nMore context that must be preserved.";
+
+const issue: GitHubIssue = {
+  number: 42,
+  nodeId: "I_42",
+  title: "Add token refresh validation",
+  body: ISSUE_BODY,
+  updatedAt: "2026-08-18T00:00:00Z",
+  state: "open",
+  htmlUrl: "https://github.com/acme/widgets/issues/42",
+};
+
+function completeDraft(): TaskDraft {
+  return {
+    schemaVersion: 1,
+    repository: { owner: "acme", repo: "widgets" },
+    issue: { number: 42, nodeId: "I_42", updatedAt: "2026-08-18T00:00:00Z" },
+    objective: "Implement token refresh validation",
+    context: "The auth module owns session refresh.",
+    expectedBehavior: ["Expired refresh tokens are rejected"],
+    acceptanceCriteria: [
+      { id: "ac1", text: "A refresh with an expired token returns 401" },
+    ],
+    constraints: [],
+    nonGoals: [],
+    validation: ["npm test"],
+    dependencies: [],
+    canonicalReferences: [],
+    sourceBodyHash: "stale-hash",
+  };
+}
+
+class FakeGitHub implements GitHubPort {
+  readonly calls: string[] = [];
+  issue: GitHubIssue;
+
+  constructor(issue: GitHubIssue) {
+    this.issue = issue;
+  }
+
+  async getIssue(number: number): Promise<GitHubIssue> {
+    this.calls.push("getIssue");
+    return { ...this.issue, number };
+  }
+
+  async updateIssueBody(number: number, body: string): Promise<GitHubIssue> {
+    this.calls.push("updateIssueBody");
+    this.issue = {
+      ...this.issue,
+      number,
+      body,
+      updatedAt: "2026-08-18T01:00:00Z",
+    };
+    return { ...this.issue };
+  }
+
+  async createIssueComment(): Promise<void> {
+    this.calls.push("createIssueComment");
+    throw new Error("must not be called");
+  }
+
+  async findPullRequestByHead(): Promise<null> {
+    return null;
+  }
+
+  async createPullRequest(): Promise<never> {
+    this.calls.push("createPullRequest");
+    throw new Error("must not be called");
+  }
+
+  async findIssueCommentByMarker(): Promise<null> {
+    return null;
+  }
+}
+
+/** Mutates the issue only after the analysis-time fetch, simulating an edit. */
+class ConcurrentEditGitHub extends FakeGitHub {
+  private reads = 0;
+
+  constructor(
+    issue: GitHubIssue,
+    private readonly mutate: (issue: GitHubIssue) => GitHubIssue,
+  ) {
+    super(issue);
+  }
+
+  override async getIssue(number: number): Promise<GitHubIssue> {
+    this.reads += 1;
+    // Initial fetch (1) and the analysis-time fetch (2) see the original;
+    // the pre-mutation re-fetch (3) sees the concurrent edit.
+    if (this.reads >= 3) {
+      return { ...this.mutate(this.issue), number };
+    }
+    return super.getIssue(number);
+  }
+}
+
+class FakeRefinerRunner implements RefinerRunner {
+  constructor(private readonly result: RefinerResult) {}
+
+  async run(request: PiRunRequest): Promise<PiExecution> {
+    return {
+      result: this.result,
+      exitCode: 0,
+      durationMs: 1,
+      stdout: "",
+      stderr: "",
+      resultPath: path.join(request.diagnosticsDir, "result.json"),
+    };
+  }
+}
+
+let tempDirs: string[] = [];
+
+async function git(cwd: string, args: string[]): Promise<void> {
+  const runner = new ProcessRunner();
+  const result = await runner.run({
+    command: "git",
+    args,
+    cwd,
+    timeoutMs: 30_000,
+    env: safeProcessEnv(),
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${result.stderr || result.stdout}`,
+    );
+  }
+}
+
+async function createFixtureRepo(): Promise<string> {
+  const root = mkdtempSync(path.join(tmpdir(), "ap-prepare-repo-"));
+  tempDirs.push(root);
+  await git(root, ["init", "-b", "main"]);
+  await git(root, ["config", "user.email", "test@example.com"]);
+  await git(root, ["config", "user.name", "Test User"]);
+  await git(root, ["config", "commit.gpgsign", "false"]);
+  await git(root, ["remote", "add", "origin", "git@github.com:acme/widgets.git"]);
+  mkdirSync(path.join(root, ".pi"), { recursive: true });
+  writeFileSync(path.join(root, ".pi", "autopilot.yaml"), MINIMAL_YAML, "utf8");
+  writeFileSync(path.join(root, "README.md"), "fixture\n", "utf8");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "initial"]);
+  return root;
+}
+
+function makeHarness(
+  root: string,
+  refinerResult: RefinerResult,
+  github: FakeGitHub,
+  confirm: (prompt: string) => Promise<boolean>,
+): {
+  exitCodes: number[];
+  stdoutLines: string[];
+  stderrLines: string[];
+  run: (args: string[]) => Promise<unknown>;
+} {
+  const exitCodes: number[] = [];
+  const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
+  const dataDir = mkdtempSync(path.join(tmpdir(), "ap-prepare-data-"));
+  tempDirs.push(dataDir);
+  const runner = new FakeRefinerRunner(refinerResult);
+
+  const deps: PrepareCommandDeps = {
+    cwd: root,
+    dataDir,
+    createGitHub: async () => github,
+    createReadiness: (d) =>
+      new ReadinessService({
+        repository: d.repository,
+        config: d.config,
+        github: d.github,
+        pi: runner,
+        artifacts: new ArtifactStore(appPaths(dataDir)),
+        paths: appPaths(dataDir),
+        refinerModel: d.refinerModel,
+        analysisId: () => "prepare-test-42",
+        now: () => "2026-08-18T00:00:00.000Z",
+      }),
+    confirm,
+    stdout: (text) => stdoutLines.push(text),
+    stderr: (text) => stderrLines.push(text),
+    setExitCode: (code) => exitCodes.push(code),
+  };
+
+  const run = (args: string[]) =>
+    buildProgram(deps).parseAsync(["node", "autopilot", ...args]);
+
+  return { exitCodes, stdoutLines, stderrLines, run };
+}
+
+afterEach(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  tempDirs = [];
+});
+
+describe("autopilot prepare", () => {
+  const readyRefiner: RefinerResult = {
+    outcome: "READY",
+    taskDraft: completeDraft(),
+    missingInformation: [],
+    dependencies: [],
+    ambiguities: [],
+  };
+
+  it("applies the managed refinement after explicit approval", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const harness = makeHarness(root, readyRefiner, github, async () => true);
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    expect(harness.stdoutLines.join("\n")).toContain("Applied");
+    const updateCalls = github.calls.filter(
+      (call) => call === "updateIssueBody",
+    );
+    expect(updateCalls).toHaveLength(1);
+    expect(github.issue.body).toContain(ISSUE_BODY);
+    expect(github.issue.body).toContain(REFINEMENT_START);
+    expect(github.issue.body).toContain(
+      "Implement token refresh validation",
+    );
+    expect(github.calls).not.toContain("createIssueComment");
+    expect(github.calls).not.toContain("createPullRequest");
+  });
+
+  it("makes zero mutation calls when the operator declines", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const harness = makeHarness(root, readyRefiner, github, async () => false);
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    expect(harness.stdoutLines.join("\n")).toContain("no changes");
+    expect(github.calls).toEqual(["getIssue", "getIssue"]);
+    expect(github.issue.body).toBe(ISSUE_BODY);
+  });
+
+  it("emits the proposed body and diff under --json without applying", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const harness = makeHarness(root, readyRefiner, github, async () => {
+      throw new Error("--json must not prompt for approval");
+    });
+
+    await harness.run(["prepare", "42", "--json"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    expect(github.calls).toEqual(["getIssue", "getIssue"]);
+    const outcome = JSON.parse(harness.stdoutLines.join("\n"));
+    expect(outcome.applied).toBe(false);
+    expect(outcome.reason).toBe("json-proposal");
+    expect(outcome.proposedBody).toContain(REFINEMENT_START);
+    expect(outcome.proposedBody).toContain(ISSUE_BODY);
+    expect(outcome.diff).toContain("--- original");
+    expect(outcome.diff).toContain("+### Goal");
+    expect(outcome.updatedAt).toBe("2026-08-18T00:00:00Z");
+  });
+
+  it("aborts without mutating when the issue changed during analysis", async () => {
+    const root = await createFixtureRepo();
+    const github = new ConcurrentEditGitHub(issue, (current) => ({
+      ...current,
+      updatedAt: "2026-08-18T09:00:00Z",
+    }));
+    const harness = makeHarness(root, readyRefiner, github, async () => true);
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([1]);
+    expect(harness.stderrLines.join("\n")).toContain(
+      "changed during analysis",
+    );
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
+  });
+
+  it("aborts without mutating when the body changed but updatedAt did not", async () => {
+    const root = await createFixtureRepo();
+    const github = new ConcurrentEditGitHub(issue, (current) => ({
+      ...current,
+      body: "someone edited the body in place",
+    }));
+    const harness = makeHarness(root, readyRefiner, github, async () => true);
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([1]);
+    expect(harness.stderrLines.join("\n")).toContain("body changed");
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
+  });
+
+  it("errors without mutating when the issue body already has duplicate markers", async () => {
+    const root = await createFixtureRepo();
+    const body = `${REFINEMENT_START}\nold\n${REFINEMENT_START}\nolder`;
+    const github = new FakeGitHub({ ...issue, body });
+    const harness = makeHarness(root, readyRefiner, github, async () => true);
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([1]);
+    expect(harness.stderrLines.join("\n")).toContain(
+      "multiple autopilot-refinement markers",
+    );
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
+  });
+
+  it("rejects a qualified issue reference that does not match the origin", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const harness = makeHarness(root, readyRefiner, github, async () => true);
+
+    await harness.run(["prepare", "other/repo#42"]);
+
+    expect(harness.exitCodes).toEqual([1]);
+    expect(harness.stderrLines.join("\n")).toContain("origin");
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
+  });
+
+  it("rejects an invalid thinking level", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const harness = makeHarness(root, readyRefiner, github, async () => true);
+
+    await harness.run(["prepare", "42", "--thinking", "turbo"]);
+
+    expect(harness.exitCodes).toEqual([1]);
+    expect(harness.stderrLines.join("\n")).toContain("thinking");
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
+  });
+});
