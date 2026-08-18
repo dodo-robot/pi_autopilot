@@ -372,7 +372,7 @@ describe("WorkspaceManager", () => {
       baseBranch: "main",
     });
 
-    await manager.removeSuccessful(workspace);
+    await manager.removeSuccessful(workspace, "success");
 
     const status = await manager.inspect(workspace);
     expect(status.exists).toBe(false);
@@ -397,5 +397,58 @@ describe("WorkspaceManager", () => {
 
     const branchList = await git(root, ["branch", "--list", workspace.branch]);
     expect(branchList).not.toBe("");
+  });
+
+  it("refuses to remove a blocked-run workspace when retainBlockedWorktree is true", async () => {
+    const { root } = await createFixtureRepo();
+    const manager = makeManager(root, { retainBlockedWorktree: true });
+    const workspace = await manager.create({
+      runId: "run-15",
+      issueNumber: 42,
+      title: "Token refresh",
+      baseBranch: "main",
+    });
+
+    await expect(manager.removeSuccessful(workspace, "blocked")).rejects.toThrow(
+      WorkspaceError,
+    );
+    await expect(manager.removeSuccessful(workspace, "failed")).rejects.toThrow(
+      /retain/i,
+    );
+
+    const status = await manager.inspect(workspace);
+    expect(status.exists).toBe(true);
+    const branchList = await git(root, ["branch", "--list", workspace.branch]);
+    expect(branchList).not.toBe("");
+  });
+
+  it("allows removing a blocked-run workspace when retainBlockedWorktree is false", async () => {
+    const { root } = await createFixtureRepo();
+    const manager = makeManager(root, { retainBlockedWorktree: false });
+    const workspace = await manager.create({
+      runId: "run-16",
+      issueNumber: 42,
+      title: "Token refresh",
+      baseBranch: "main",
+    });
+
+    await manager.removeSuccessful(workspace, "blocked");
+
+    const status = await manager.inspect(workspace);
+    expect(status.exists).toBe(false);
+  });
+
+  it("slugifies an empty or all-punctuation title into an issue-number-only branch", async () => {
+    const { root } = await createFixtureRepo();
+    const manager = makeManager(root);
+
+    const workspace = await manager.create({
+      runId: "run-17",
+      issueNumber: 99,
+      title: "!!!",
+      baseBranch: "main",
+    });
+
+    expect(workspace.branch).toBe("autopilot/99");
   });
 });

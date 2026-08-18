@@ -55,6 +55,13 @@ export interface CommitRequest {
   expectedTreeHash: string;
 }
 
+/**
+ * The terminal outcome of a run, used to gate whether a workspace's
+ * worktree and branch may be removed. Only `"success"` may bypass
+ * `policy.retainBlockedWorktree`.
+ */
+export type RunOutcome = "success" | "blocked" | "failed";
+
 const MAX_SLUG_LENGTH = 40;
 
 /** Lowercase, hyphenate, and bound a title for use in a branch name. */
@@ -256,10 +263,21 @@ export class WorkspaceManager {
 
   /**
    * Remove a workspace's worktree and branch. Callers must only invoke
-   * this after durable PR evidence exists; blocked or failed workspaces
-   * must be left in place for diagnosis.
+   * this after durable PR evidence exists for a successful run. Refuses
+   * when `outcome` is not `"success"` and `policy.retainBlockedWorktree`
+   * is true, so blocked or failed workspaces are left in place for
+   * diagnosis by construction, not merely by caller discipline.
    */
-  async removeSuccessful(workspace: Workspace): Promise<void> {
+  async removeSuccessful(
+    workspace: Workspace,
+    outcome: RunOutcome,
+  ): Promise<void> {
+    if (outcome !== "success" && this.policy.retainBlockedWorktree) {
+      throw new WorkspaceError(
+        `refusing to remove workspace: run outcome '${outcome}' must be retained for diagnosis (retainBlockedWorktree is enabled)`,
+      );
+    }
+
     await runGit(
       this.processRunner,
       ["worktree", "remove", "--force", workspace.path],
