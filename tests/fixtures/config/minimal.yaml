@@ -1,0 +1,39 @@
+version: 1
+
+workspace:
+  baseBranch: main
+  branchPrefix: autopilot/
+  requireCleanCheckout: true
+  retainBlockedWorktree: true
+
+commands:
+  setup:
+    - npm ci
+  verify:
+    - npm test
+
+agents:
+  refiner:
+    model: anthropic/claude-haiku
+    thinking: high
+  implementer:
+    model: anthropic/claude-sonnet-4
+    thinking: high
+  reviewer:
+    model: openai/gpt-5.2
+    thinking: high
+
+agentPolicy:
+  allowedCommands:
+    - npm
+    - npx
+    - node
+    - rg
+    - find
+  protectedPaths: []
+  allowNetwork: false
+
+publication:
+  draftPr: false
+  issueComment: concise
+  autoMerge: false
