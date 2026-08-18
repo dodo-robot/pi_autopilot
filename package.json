@@ -4,12 +4,15 @@
   "private": true,
   "type": "module",
   "bin": { "autopilot": "bin/autopilot.js" },
+  "files": ["bin", "dist", "examples", "README.md"],
   "engines": { "node": ">=22.5" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "vitest run tests/e2e --config vitest.e2e.config.ts",
+    "check": "npm run typecheck && npm test && npm run build",
     "start": "tsx src/cli.ts"
   },
   "dependencies": {

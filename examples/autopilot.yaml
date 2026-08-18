@@ -1,0 +1,97 @@
+# Sample Pi Autopilot repository policy.
+#
+# Copy this file to `.pi/autopilot.yaml` in the repository Autopilot will
+# operate on, then adjust every section below for that repository. See
+# README.md ("Policy reference (`.pi/autopilot.yaml`)") for the full field
+# reference and `src/config/schema.ts` for the authoritative schema.
+#
+# Autopilot validates this file before any readiness analysis or workspace
+# creation and refuses to guess missing verification commands.
+
+version: 1
+
+workspace:
+  # Autopilot only ever creates workspaces from this branch and refuses to
+  # operate if the local clone's checked-out branch/base does not match.
+  baseBranch: main
+  # Prefix applied to every run's dedicated branch, e.g. autopilot/123-fix-timeout.
+  branchPrefix: autopilot/
+  # Refuse to start a run when the primary checkout is dirty.
+  requireCleanCheckout: true
+  # Keep a BLOCKED or FAILED run's worktree and branch on disk for
+  # diagnosis (inspect/resume) instead of deleting them.
+  retainBlockedWorktree: true
+
+commands:
+  # Run once, in order, before implementation begins. A failing setup
+  # command blocks the run before any agent session starts.
+  setup:
+    - npm ci
+  # Run after every implementation attempt. Every command must exit 0 for
+  # verification to pass; results are independent of any agent's claims.
+  verify:
+    - npm run lint
+    - npm run typecheck
+    - npm test
+
+agents:
+  # Per-role model/thinking overrides. Omit a role to fall back to
+  # Autopilot's user defaults, then the Pi CLI's own default model.
+  # Precedence (highest first): CLI flag > this section > user defaults >
+  # Pi default.
+  refiner:
+    model: anthropic/claude-sonnet-4
+    thinking: high
+  implementer:
+    model: anthropic/claude-sonnet-4
+    thinking: high
+  reviewer:
+    # Reviewer independence comes from a fresh session and independent
+    # evidence, not solely from using a different model family, but a
+    # different family is encouraged.
+    model: openai/gpt-5.2
+    thinking: high
+
+agentPolicy:
+  # Bare executable names an implementer session's bash tool may invoke.
+  # Enforced fail-closed by the guard extension regardless of this list:
+  # git push/reset/clean/branch -D, `gh`, shell dispatchers (sh, bash,
+  # env, xargs, ...), and other dangerous executables (rm, curl, python,
+  # node, ...) are always denied, even if listed here.
+  allowedCommands:
+    - npm
+    - npx
+    - node
+    - rg
+    - find
+  # Paths (relative to the run's worktree) no tool call may read from,
+  # write to, or otherwise touch, no matter which role is running.
+  protectedPaths:
+    - .github/workflows/
+  # Whether agent sessions may reach the network. M1 has no proxying or
+  # allowlisted-domain support yet; leave this false unless your
+  # verification commands genuinely require network access.
+  allowNetwork: false
+
+budgets:
+  implementation:
+    # Wall-clock timeout for a single implementer session.
+    timeoutMinutes: 60
+    # Maximum implementer attempts (initial attempt plus corrections)
+    # before a run BLOCKS instead of retrying indefinitely.
+    maxAttempts: 3
+  review:
+    # Wall-clock timeout for a single reviewer session.
+    timeoutMinutes: 20
+    # Maximum CHANGES_REQUESTED correction cycles before a run BLOCKS.
+    maxCorrectionCycles: 2
+
+publication:
+  # Open the PR as a draft instead of ready-for-review.
+  draftPr: false
+  # The only issueComment style M1 supports: one concise comment with the
+  # run ID, PR link, and verification summary.
+  issueComment: concise
+  # M1 never merges PRs regardless of this value; reserved for a later
+  # milestone's policy-driven automation.
+  autoMerge: false

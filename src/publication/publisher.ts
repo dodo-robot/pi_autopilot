@@ -120,7 +120,7 @@ function renderIssueComment(input: {
     ``,
     `Verification: ${commandCount} command(s), passed=${verification.passed}.`,
     ``,
-    `Run: ${runId}`,
+    `Run ID: ${runId}`,
     commentMarker(runId),
   ].join("\n");
 }
