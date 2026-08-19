@@ -188,7 +188,14 @@ export class GitHubAdapter implements GitHubPort {
       const token =
         options.token ??
         (await resolveGhToken(ctx.root, processRunner));
-      octokit = new Octokit({ auth: token });
+      octokit = new Octokit({
+        auth: token,
+        // Pin the REST API version: GitHub deprecated the unversioned API and
+        // returns a deprecation warning (and, from 2028, will reject it).
+        request: {
+          headers: { "X-GitHub-Api-Version": "2022-11-28" },
+        },
+      });
     }
 
     return new GitHubAdapter(ctx.repository.owner, ctx.repository.repo, octokit);
