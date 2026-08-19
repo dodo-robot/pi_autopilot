@@ -43,6 +43,7 @@ export interface CheckCommandDeps {
     config: AutopilotConfig;
     github: GitHubPort;
     refinerModel: ResolvedRoleModel;
+    refinerTimeoutMs: number;
   }) => Pick<ReadinessService, "check">;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
@@ -53,6 +54,7 @@ interface CheckOptions {
   json?: boolean;
   model?: string;
   thinking?: string;
+  refinerTimeout?: number;
 }
 
 /**
@@ -73,6 +75,7 @@ export function registerCheckCommand(
     .option("--json", "emit a machine-readable readiness report")
     .option("--model <model>", "override the refiner model")
     .option("--thinking <level>", "override the refiner thinking level")
+    .option("--refiner-timeout <minutes>", "override the refiner session timeout in minutes (default: from policy budgets.refiner.timeoutMinutes or 5)")
     .action(async (issueRef: string, opts: CheckOptions) => {
       const stdout = deps.stdout ?? ((text: string) => process.stdout.write(`${text}\n`));
       const stderr = deps.stderr ?? ((text: string) => process.stderr.write(`${text}\n`));
@@ -113,9 +116,10 @@ async function runCheck(
 
   const paths: AppPaths = appPaths(deps.dataDir);
   const refinerModel = resolveRefinerModel(opts, config, deps.piDefaultModel);
+  const refinerTimeoutMs = resolveRefinerTimeout(opts, config);
   const readiness =
     deps.createReadiness !== undefined
-      ? deps.createReadiness({ repository: ctx, config, github, refinerModel })
+      ? deps.createReadiness({ repository: ctx, config, github, refinerModel, refinerTimeoutMs })
       : new ReadinessService({
           repository: ctx,
           config,
@@ -124,6 +128,7 @@ async function runCheck(
           artifacts: new ArtifactStore(paths),
           paths,
           refinerModel,
+          refinerTimeoutMs,
         });
 
   return readiness.check(number);
@@ -178,6 +183,19 @@ function resolveRefinerModel(
     null,
     piDefault ?? DEFAULT_PI_MODEL,
   );
+}
+
+/**
+ * Resolve the refiner session timeout in milliseconds. Precedence:
+ * explicit `--refiner-timeout` flag, then the repository policy's
+ * `budgets.refiner.timeoutMinutes`, then the 5-minute built-in default.
+ */
+function resolveRefinerTimeout(
+  opts: CheckOptions,
+  config: AutopilotConfig,
+): number {
+  const minutes = opts.refinerTimeout ?? config.budgets.refiner.timeoutMinutes;
+  return minutes * 60_000;
 }
 
 function printHumanReport(

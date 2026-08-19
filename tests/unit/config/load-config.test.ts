@@ -59,6 +59,7 @@ describe("loadRepositoryConfig", () => {
     expect(config.agentPolicy.allowNetwork).toBe(false);
     expect(config.budgets.review.maxCorrectionCycles).toBe(2);
     expect(config.budgets.implementation.maxAttempts).toBe(3);
+    expect(config.budgets.refiner.timeoutMinutes).toBe(5);
   });
 
   it("rejects a config with an empty verification command list", async () => {

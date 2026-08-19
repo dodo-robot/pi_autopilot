@@ -63,6 +63,11 @@ export const AutopilotConfigSchema = z.object({
     .prefault({}),
   budgets: z
     .object({
+      refiner: z
+        .object({
+          timeoutMinutes: z.number().int().positive().default(5),
+        })
+        .prefault({}),
       implementation: z
         .object({
           timeoutMinutes: z.number().int().positive().default(60),

@@ -74,6 +74,11 @@ agentPolicy:
   allowNetwork: false
 
 budgets:
+  # Per-session timeout for the refiner used by `check`/`prepare`. Note:
+  # a checkout exits as soon as the refiner finishes; this is only the
+  # maximum wall-clock cap before the session is killed (hang protection).
+  refiner:
+    timeoutMinutes: 5
   implementation:
     # Wall-clock timeout for a single implementer session.
     timeoutMinutes: 60

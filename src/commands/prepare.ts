@@ -44,6 +44,7 @@ interface PrepareOptions {
   json?: boolean;
   model?: string;
   thinking?: string;
+  refinerTimeout?: number;
 }
 
 interface PrepareOutcome {
@@ -77,6 +78,7 @@ export function registerPrepareCommand(
     .option("--json", "emit the proposed refinement without applying it")
     .option("--model <model>", "override the refiner model")
     .option("--thinking <level>", "override the refiner thinking level")
+    .option("--refiner-timeout <minutes>", "override the refiner session timeout in minutes (default: from policy budgets.refiner.timeoutMinutes or 5)")
     .action(async (issueRef: string, opts: PrepareOptions) => {
       const stdout =
         deps.stdout ?? ((text: string) => process.stdout.write(`${text}\n`));
@@ -120,9 +122,10 @@ async function runPrepare(
 
   const paths: AppPaths = appPaths(deps.dataDir);
   const refinerModel = resolveRefinerModel(opts, config, deps.piDefaultModel);
+  const refinerTimeoutMs = resolveRefinerTimeout(opts, config);
   const readiness =
     deps.createReadiness !== undefined
-      ? deps.createReadiness({ repository: ctx, config, github, refinerModel })
+      ? deps.createReadiness({ repository: ctx, config, github, refinerModel, refinerTimeoutMs })
       : new ReadinessService({
           repository: ctx,
           config,
@@ -131,6 +134,7 @@ async function runPrepare(
           artifacts: new ArtifactStore(paths),
           paths,
           refinerModel,
+          refinerTimeoutMs,
         });
 
   // Initial fetch: the base for the diff and the concurrent-edit guard.
@@ -229,6 +233,19 @@ function resolveIssueRef(
   throw new Error(
     `invalid issue reference '${issueRef}' (expected <number> or <owner>/<repo>#<number>)`,
   );
+}
+
+/**
+ * Resolve the refiner session timeout in milliseconds. Precedence:
+ * explicit `--refiner-timeout` flag, then the repository policy's
+ * `budgets.refiner.timeoutMinutes`, then the 5-minute built-in default.
+ */
+function resolveRefinerTimeout(
+  opts: PrepareOptions,
+  config: AutopilotConfig,
+): number {
+  const minutes = opts.refinerTimeout ?? config.budgets.refiner.timeoutMinutes;
+  return minutes * 60_000;
 }
 
 function resolveRefinerModel(

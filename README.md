@@ -119,6 +119,10 @@ autopilot abandon <run-id>         # mark a run CANCELLED (keeps worktree/branch
 Every command accepts `--json` for a stable, machine-readable result on
 stdout; human-readable output is the default.
 
+`check` and `prepare` also accept `--refiner-timeout <minutes>` to override
+the refiner session timeout (falling back to the repository policy's
+`budgets.refiner.timeoutMinutes`, then a 5-minute default).
+
 | Command | Exit `0` | Exit `1` | Exit `2` |
 |---|---|---|---|
 | `check` | `READY` | thrown error (invalid ref, config, etc.) | `NEEDS_REFINEMENT` |
@@ -185,7 +189,8 @@ it is a complete, schema-valid policy with a comment above every field.
 | `agentPolicy` | `allowedCommands` | Bare executable names an implementer session's `bash` tool may invoke. Dangerous/dispatcher commands (`git push`, `gh`, `rm`, shells, etc.) are always denied regardless of this list. |
 | | `protectedPaths` | Paths, relative to the worktree, no tool call may read, write, or otherwise touch. |
 | | `allowNetwork` | Reserved; M1 has no network-allowlisting mechanism yet. |
-| `budgets` | `implementation.timeoutMinutes`/`maxAttempts` | Per-session timeout and max implementer attempts before `BLOCKED`. |
+| `budgets` | `refiner.timeoutMinutes` | Per-session timeout for a refiner session (`check`/`prepare`). Default 5 minutes. |
+| | `implementation.timeoutMinutes`/`maxAttempts` | Per-session timeout and max implementer attempts before `BLOCKED`. |
 | | `review.timeoutMinutes`/`maxCorrectionCycles` | Per-session timeout and max `CHANGES_REQUESTED` correction cycles before `BLOCKED`. |
 | `publication` | `draftPr` | Open the PR as a draft. |
 | | `issueComment` | Only `concise` is supported in M1. |

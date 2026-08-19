@@ -90,7 +90,10 @@ class FakeGitHub implements GitHubPort {
 class FakeRefinerRunner implements RefinerRunner {
   constructor(private readonly result: RefinerResult) {}
 
+  requests: PiRunRequest[] = [];
+
   async run(request: PiRunRequest): Promise<PiExecution> {
+    this.requests.push(request);
     return {
       result: this.result,
       exitCode: 0,
@@ -118,7 +121,7 @@ async function git(cwd: string, args: string[]): Promise<void> {
   }
 }
 
-async function createFixtureRepo(): Promise<string> {
+async function createFixtureRepo(yamlOverride?: string): Promise<string> {
   const root = mkdtempSync(path.join(tmpdir(), "ap-check-repo-"));
   tempDirs.push(root);
   await git(root, ["init", "-b", "main"]);
@@ -127,7 +130,7 @@ async function createFixtureRepo(): Promise<string> {
   await git(root, ["config", "commit.gpgsign", "false"]);
   await git(root, ["remote", "add", "origin", "git@github.com:acme/widgets.git"]);
   mkdirSync(path.join(root, ".pi"), { recursive: true });
-  writeFileSync(path.join(root, ".pi", "autopilot.yaml"), MINIMAL_YAML, "utf8");
+  writeFileSync(path.join(root, ".pi", "autopilot.yaml"), yamlOverride ?? MINIMAL_YAML, "utf8");
   writeFileSync(path.join(root, "README.md"), "fixture\n", "utf8");
   await git(root, ["add", "."]);
   await git(root, ["commit", "-m", "initial"]);
@@ -165,6 +168,7 @@ function makeHarness(
         artifacts: new ArtifactStore(appPaths(dataDir)),
         paths: appPaths(dataDir),
         refinerModel: d.refinerModel,
+        refinerTimeoutMs: d.refinerTimeoutMs,
         analysisId: () => "check-test-42",
         now: () => "2026-08-18T00:00:00.000Z",
       }),
@@ -176,7 +180,7 @@ function makeHarness(
   const run = (args: string[]) =>
     buildProgram(deps).parseAsync(["node", "autopilot", ...args]);
 
-  return { exitCodes, stdoutLines, stderrLines, github, run };
+  return { exitCodes, stdoutLines, stderrLines, github, runner, run };
 }
 
 afterEach(() => {
@@ -226,6 +230,44 @@ describe("autopilot check", () => {
     expect(output).toContain("Status: NEEDS_REFINEMENT");
     expect(output).toContain("NO_TESTABLE_ACCEPTANCE_CRITERIA");
     expect(harness.github.mutationCalls).toEqual([]);
+  });
+
+  it("uses the policy's budgets.refiner.timeoutMinutes for the refiner session", async () => {
+    const root = await createFixtureRepo(
+      `version: 1\ncommands:\n  verify:\n    - npm test\nbudgets:\n  refiner:\n    timeoutMinutes: 12\n`,
+    );
+    const refiner: RefinerResult = {
+      outcome: "READY",
+      taskDraft: completeDraft(),
+      missingInformation: [],
+      dependencies: [],
+      ambiguities: [],
+    };
+    const harness = makeHarness(root, refiner);
+
+    await harness.run(["check", "42"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    expect(harness.runner.requests[0]?.timeoutMs).toBe(12 * 60_000);
+  });
+
+  it("overrides the policy refiner timeout with --refiner-timeout", async () => {
+    const root = await createFixtureRepo(
+      `version: 1\ncommands:\n  verify:\n    - npm test\nbudgets:\n  refiner:\n    timeoutMinutes: 3\n`,
+    );
+    const refiner: RefinerResult = {
+      outcome: "READY",
+      taskDraft: completeDraft(),
+      missingInformation: [],
+      dependencies: [],
+      ambiguities: [],
+    };
+    const harness = makeHarness(root, refiner);
+
+    await harness.run(["check", "42", "--refiner-timeout", "20"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    expect(harness.runner.requests[0]?.timeoutMs).toBe(20 * 60_000);
   });
 
   it("emits a machine-readable report with --json", async () => {
