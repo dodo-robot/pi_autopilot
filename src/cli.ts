@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import type { AbandonCommandDeps } from "./commands/abandon.js";
@@ -54,7 +55,13 @@ function isEntryModule(): boolean {
   const argv1 = process.argv[1];
   if (argv1 === undefined) return false;
   try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+    const entry = realpathSync(argv1);
+    // Direct launch of the source/compiled module via tsx or `node dist/cli.js`:
+    // the running entry IS this module.
+    if (import.meta.url === pathToFileURL(entry).href) return true;
+    // npm-link / global install (`autopilot`) launches the bin/autopilot.js
+    // shim, which imports ../dist/cli.js and therefore has a different argv[1].
+    return entry.endsWith(`${sep}bin${sep}autopilot.js`);
   } catch {
     return false;
   }
