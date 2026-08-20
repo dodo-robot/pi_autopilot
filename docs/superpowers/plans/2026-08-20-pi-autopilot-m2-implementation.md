@@ -240,9 +240,12 @@ export function resolveRefinerTimeout(
 Then edit `check.ts`:
 - Remove the local `function resolveIssueRef(...)`, `function resolveRefinerModel(...)`, and `function resolveRefinerTimeout(...)`.
 - Add `import { resolveIssueRef, resolveRefinerModel, resolveRefinerTimeout } from "./args.js";`
-- Update the `runCheck` call sites to pass `opts.refinerTimeout ?? undefined` (the local `resolveRefinerTimeout(opts, config)` is replaced by `resolveRefinerTimeout(opts.refinerTimeout, config)`), and the `runPrepare`-style model call `resolveRefinerModel({ model: opts.model, thinking: opts.thinking }, config, deps.piDefaultModel)`.
+- Update the call sites: `resolveRefinerTimeout(opts.refinerTimeout, config)` (replaces `resolveRefinerTimeout(opts, config)`) and `resolveRefinerModel({ model: opts.model, thinking: opts.thinking }, config, deps.piDefaultModel)`.
+- After removal, these imports become **unused** and must be removed from `check.ts`: `DEFAULT_PI_MODEL` and `resolveRoleModel` (from `load-config.js`), `RoleModelOverride` (from `schema.js` — but KEEP `AutopilotConfig` and `RoleModelEntry` from that same import), `ThinkingLevelSchema` (from `schema.js`), and `assertRepositoryMatches` (from `repository-context.js` — keep `resolveRepositoryContext`). Keep `ResolvedRoleModel` (still used by the `createReadiness` deps type).
 
-Edit `prepare.ts` the same way (its `resolveIssueRef`, `resolveRefinerModel`, `resolveRefinerTimeout` are identical local copies; remove them and import from `./args.js`). Note: after this, `prepare.ts` may no longer need `ThinkingLevelSchema`, `resolveRoleModel`, `DEFAULT_PI_MODEL`, `RoleModelOverride`, `RoleModelEntry`, or `ResolvedRoleModel` imports — remove any that become unused to keep typecheck clean. Also check whether `CheckCommandDeps` re-export in `prepare.ts` still needs those types.
+Edit `prepare.ts` similarly: remove the local copies of `resolveIssueRef`, `resolveRefinerModel`, `resolveRefinerTimeout`; add the `./args.js` import; update the two call sites (`resolveRefinerTimeout(opts.refinerTimeout, config)`, `resolveRefinerModel({ model: opts.model, thinking: opts.thinking }, config, deps.piDefaultModel)`). After removal these imports become **unused** and must be removed from `prepare.ts`: `ResolvedRoleModel`, `DEFAULT_PI_MODEL`, `resolveRoleModel` (from `load-config.js`), `RoleModelEntry` and `RoleModelOverride` (from `schema.js` — KEEP `AutopilotConfig`), `ThinkingLevelSchema` (from `schema.js`), and `assertRepositoryMatches` (from `repository-context.js` — keep `resolveRepositoryContext`). `Command`, `GitHubPort`, `GitHubAdapter`, `RepositoryContext`, `ArtifactStore`, `PiRunner`, `appPaths`, `AppPaths`, `ProcessRunner`/`ProcessRunnerImpl`, `ReadinessReport`, `ReadinessService`, `sha256`, the `refinement-section` imports, and `CheckCommandDeps` remain needed by `prepare.ts` — do not touch them.
+
+Note: `tsconfig.json` does not set `noUnusedLocals`, so leaving an unused import would NOT fail `npm run typecheck`. Still remove the imports listed above — the repo keeps imports tidy and the build stays warning-free.
 
 - [ ] **Step 4: Run the unit test to verify it passes**
 
@@ -654,10 +657,10 @@ export interface ResolvedIssueSet {
 }
 ```
 
-**Reference extraction:** A checklist line matches `^- \[[ xX]\]\s+(?=.+?\s+)(?:.*?)(?:`?([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)?#([0-9]+)`?)?\s*$` — simpler and robust: use a regex that strips the checkbox, then looks for an issue reference anywhere in the remainder:
-- Qualified: `([^/\s]+)\/([^/\s]+)#(\d+)`
-- Bare: `(?:^|\s)#(\d+)\b` (a `#`-prefixed number that is not part of a qualified ref)
-A line is *resolved* if it yields at least one issue reference; its FIRST reference is the task. Lines with `- [ ]` but no reference are prose-only → recorded in `unresolvedProseLines`.
+**Reference extraction:** A checklist line matches a Markdown checkbox prefix `^-\s*\[[ xX]\]\s+`. Strip that prefix and consider the remainder. Extract issue references from the remainder with two ordered passes (only the FIRST reference on a line is the task, but collect all so de-dupe can happen upstream):
+1. Qualified refs first: global match `/([^/\s]+)\/([^/\s]+)#(\d+)/g`.
+2. Bare refs second: global match `/#(\d+)\b/g` on a copy where steps-1 matches have already been removed (so the `<owner>/<repo>#n` prefix never double-counts). This correctly captures GitHub-style `##102` (the regex finds `#102` after skipping the leading `#`).
+A line is *resolved* if it yields at least one reference; its FIRST reference is the task number contributed. Lines with a `- [ ]` prefix but no reference are prose-only → record their **1-based line number** in `unresolvedProseLines`.
 
 Epic vs explicit-list input is normalized by the analyst: for an epic ref, it calls `collectEpicIssueRefs` + fetches each; for an explicit list it fetches each directly (unresolved list empty).
 
