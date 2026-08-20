@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import type { AbandonCommandDeps } from "./commands/abandon.js";
 import { registerAbandonCommand } from "./commands/abandon.js";
+import type { AnalyzeCommandDeps } from "./commands/analyze.js";
+import { registerAnalyzeCommand } from "./commands/analyze.js";
 import type { CheckCommandDeps } from "./commands/check.js";
 import { registerCheckCommand } from "./commands/check.js";
 import type { InspectCommandDeps } from "./commands/inspect.js";
@@ -19,6 +21,7 @@ import { registerStatusCommand } from "./commands/status.js";
 
 export type CliDeps = CheckCommandDeps &
   PrepareCommandDeps &
+  AnalyzeCommandDeps &
   RunCommandDeps &
   StatusCommandDeps &
   InspectCommandDeps &
@@ -37,6 +40,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .version("0.1.0");
   registerCheckCommand(program, deps);
   registerPrepareCommand(program, deps);
+  registerAnalyzeCommand(program, deps);
   registerRunCommand(program, deps);
   registerStatusCommand(program, deps);
   registerInspectCommand(program, deps);
