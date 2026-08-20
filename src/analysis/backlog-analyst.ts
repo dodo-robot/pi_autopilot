@@ -14,6 +14,11 @@ import {
 } from "../domain/backlog.js";
 import { screenIssue, type ScreenDependency } from "./heuristic-screen.js";
 import {
+  dependencyNumberFromMatch,
+  LINE_DEPENDENCY_PATTERN,
+  MANAGED_DEPENDENCY_PATTERN,
+} from "./dependency-markers.js";
+import {
   collectEpicIssueRefs,
   resolveIssueSet,
 } from "./issue-set.js";
@@ -249,12 +254,14 @@ export class BacklogAnalyst {
     };
 
     // Managed refinement-section rendering: `- #<n> (unsatisfied)`.
-    const managedPattern = /- #(\d+) \(unsatisfied\)/g;
-    for (const match of body.matchAll(managedPattern)) record(Number(match[1]));
+    for (const match of body.matchAll(MANAGED_DEPENDENCY_PATTERN)) {
+      record(dependencyNumberFromMatch(match));
+    }
 
     // Explicit dependency line at line start.
-    const linePattern = /^[ \t]*(?:depends?\s+on\b|dependency)\b\s*:?\s*#?\s*(\d+)/gim;
-    for (const match of body.matchAll(linePattern)) record(Number(match[1]));
+    for (const match of body.matchAll(LINE_DEPENDENCY_PATTERN)) {
+      record(dependencyNumberFromMatch(match));
+    }
 
     for (const dep of deps.values()) {
       try {

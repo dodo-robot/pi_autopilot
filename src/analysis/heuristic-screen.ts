@@ -1,5 +1,10 @@
 import type { GitHubIssue } from "../github/github-adapter.js";
 import type { ScreenDecision } from "../domain/backlog.js";
+import {
+  dependencyNumberFromMatch,
+  LINE_DEPENDENCY_PATTERN,
+  MANAGED_DEPENDENCY_PATTERN,
+} from "./dependency-markers.js";
 
 export const REFINEMENT_START = "<!-- autopilot-refinement:start -->";
 export const REFINEMENT_END = "<!-- autopilot-refinement:end -->";
@@ -40,17 +45,15 @@ function hasUnsatisfiedDependencyMarker(
   if (unsatisfiedNumbers.size === 0) return false;
 
   // Managed refinement-section rendering: `- #<n> (unsatisfied)`
-  const managedPattern = /- #(\d+) \(unsatisfied\)/g;
-  for (const match of body.matchAll(managedPattern)) {
-    const num = Number(match[1]);
+  for (const match of body.matchAll(MANAGED_DEPENDENCY_PATTERN)) {
+    const num = dependencyNumberFromMatch(match);
     if (unsatisfiedNumbers.has(num)) return true;
   }
 
   // Explicit dependency line at line start:
   // `depends on: #12`, `depend on #12`, `dependency: 12`, `dependency 12`.
-  const linePattern = /^[ \t]*(?:depends?\s+on\b|dependency)\b\s*:?\s*#?\s*(\d+)/gim;
-  for (const match of body.matchAll(linePattern)) {
-    const num = Number(match[1]);
+  for (const match of body.matchAll(LINE_DEPENDENCY_PATTERN)) {
+    const num = dependencyNumberFromMatch(match);
     if (unsatisfiedNumbers.has(num)) return true;
   }
 
