@@ -366,6 +366,41 @@ describe("ReadinessService.check", () => {
     const snapshot = await store.readJson(report.analysisId, "task-snapshot.json");
     expect(snapshot.objective).toBe("Implement token refresh validation");
   });
+
+  it("writes the per-issue latest-READY pointer only when the issue is READY", async () => {
+    const { service, dataDir } = makeService(readyResult());
+    await service.check(42);
+
+    const paths = appPaths(dataDir);
+    const store = new ArtifactStore(paths);
+    const pointer = await store.readLatestReadiness(
+      "acme",
+      "widgets",
+      42,
+    );
+    expect(pointer).not.toBeNull();
+    expect(pointer?.analysisId).toBe("check-test-42");
+    expect(pointer?.status).toBe("READY");
+    expect(pointer?.issueNumber).toBe(42);
+    expect(pointer?.sourceBodyHash).toBe(sha256(issue.body));
+    expect(pointer?.updatedAt).toBe(issue.updatedAt);
+  });
+
+  it("does not write the per-issue pointer when the issue needs refinement", async () => {
+    const draft = completeDraft();
+    draft.acceptanceCriteria = [];
+    const { service, dataDir } = makeService(readyResult(draft));
+    await service.check(42);
+
+    const paths = appPaths(dataDir);
+    const store = new ArtifactStore(paths);
+    const pointer = await store.readLatestReadiness(
+      "acme",
+      "widgets",
+      42,
+    );
+    expect(pointer).toBeNull();
+  });
 });
 
 describe("computeReadinessGaps", () => {

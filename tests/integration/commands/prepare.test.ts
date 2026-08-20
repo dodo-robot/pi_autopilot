@@ -315,7 +315,9 @@ describe("autopilot prepare", () => {
     await harness.run(["prepare", "42", "--json"]);
     expect(harness.runner.requests[0]?.timeoutMs).toBe(9 * 60_000);
 
-    await harness.run(["prepare", "42", "--json", "--refiner-timeout", "25"]);
+    // Use a different issue so the fast-path reuse of #42's READY snapshot
+    // does not short-circuit this fresh-override assertion.
+    await harness.run(["prepare", "43", "--json", "--refiner-timeout", "25"]);
     expect(harness.runner.requests[1]?.timeoutMs).toBe(25 * 60_000);
     expect(harness.exitCodes).toEqual([0, 0]);
   });
