@@ -289,6 +289,18 @@ export class ReadinessService {
     await this.deps.artifacts.writeJson(analysisId, REPORT_ARTIFACT, report);
     if (snapshot !== null) {
       await this.deps.artifacts.writeJson(analysisId, SNAPSHOT_ARTIFACT, snapshot);
+      // Publish a per-issue latest-READY pointer so `prepare` can reuse this
+      // snapshot without relaunching a refiner. Written only on READY.
+      const { owner, repo } = this.deps.repository.repository;
+      await this.deps.artifacts.writeLatestReadiness(owner, repo, issueNumber, {
+        analysisId,
+        status: "READY",
+        repository: { owner, repo },
+        issueNumber,
+        updatedAt: issue.updatedAt,
+        sourceBodyHash,
+        createdAt: report.createdAt,
+      });
     }
     return report;
   }

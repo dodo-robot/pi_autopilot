@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { loadRepositoryConfig } from "../config/load-config.js";
 import type { AutopilotConfig } from "../config/schema.js";
-import type { GitHubPort } from "../github/github-adapter.js";
+import type { GitHubIssue, GitHubPort } from "../github/github-adapter.js";
 import { GitHubAdapter } from "../github/github-adapter.js";
 import type { RepositoryContext } from "../github/repository-context.js";
 import { resolveRepositoryContext } from "../github/repository-context.js";
@@ -33,6 +33,7 @@ interface PrepareOptions {
   model?: string;
   thinking?: string;
   refinerTimeout?: number;
+  fromCheck?: string;
 }
 
 interface PrepareOutcome {
@@ -42,6 +43,10 @@ interface PrepareOutcome {
   reason: "approved" | "declined" | "json-proposal";
   /** `updatedAt` of the analyzed issue (pre-edit). */
   updatedAt: string;
+  /** "reused" when a prior READY check snapshot was reused, else "fresh". */
+  source: "reused" | "fresh";
+  /** analysisId of the reused snapshot, present only when `source === "reused"`. */
+  reusedFrom?: string;
   proposedBody?: string;
   diff?: string;
 }
@@ -67,6 +72,7 @@ export function registerPrepareCommand(
     .option("--model <model>", "override the refiner model")
     .option("--thinking <level>", "override the refiner thinking level")
     .option("--refiner-timeout <minutes>", "override the refiner session timeout in minutes (default: from policy budgets.refiner.timeoutMinutes or 5)")
+    .option("--from-check <analysisId>", "reuse the READY snapshot from a prior `autopilot check` analysis id instead of a fresh refiner")
     .action(async (issueRef: string, opts: PrepareOptions) => {
       const stdout =
         deps.stdout ?? ((text: string) => process.stdout.write(`${text}\n`));
@@ -134,7 +140,18 @@ async function runPrepare(
 
   // Initial fetch: the base for the diff and the concurrent-edit guard.
   const issue = await github.getIssue(number);
-  const report: ReadinessReport = await readiness.check(number);
+
+  // Fast path: reuse a prior READY check snapshot when it still matches the
+  // current issue version. Otherwise fall back to a fresh refiner analysis.
+  const reused = await findReusableReport(
+    issue,
+    ctx.repository,
+    paths,
+    opts.fromCheck,
+  );
+  const source: PrepareOutcome["source"] = reused === null ? "fresh" : "reused";
+  const report: ReadinessReport =
+    reused ?? (await readiness.check(number));
   const proposedBody = upsertRefinementSection(issue.body, report.draft);
   const diff = renderUnifiedDiff(issue.body, proposedBody);
 
@@ -145,6 +162,8 @@ async function runPrepare(
       applied: false,
       reason: "json-proposal",
       updatedAt: issue.updatedAt,
+      source,
+      ...(reused !== null ? { reusedFrom: reused.analysisId } : {}),
       proposedBody,
       diff,
     };
@@ -161,6 +180,8 @@ async function runPrepare(
       applied: false,
       reason: "declined",
       updatedAt: issue.updatedAt,
+      source,
+      ...(reused !== null ? { reusedFrom: reused.analysisId } : {}),
     };
   }
 
@@ -185,9 +206,83 @@ async function runPrepare(
     applied: true,
     reason: "approved",
     updatedAt: updated.updatedAt,
+    source,
+    ...(reused !== null ? { reusedFrom: reused.analysisId } : {}),
     proposedBody,
     diff,
   };
+}
+
+/**
+ * Find a reusable READY snapshot for the current issue. Returns null when no
+ * valid snapshot exists, so the caller falls back to a fresh analysis.
+ *
+ * Reuse is valid only when the snapshot's `updatedAt` and `sourceBodyHash`
+ * match the CURRENT issue exactly; a changed issue instantly invalidates the
+ * snapshot (the fast-path safety rule).
+ */
+async function findReusableReport(
+  issue: GitHubIssue,
+  repository: { owner: string; repo: string },
+  paths: AppPaths,
+  fromCheck: string | undefined,
+): Promise<ReadinessReport | null> {
+  const store = new ArtifactStore(paths);
+
+  if (fromCheck !== undefined) {
+    const report = await readReportIfExists(store, fromCheck);
+    if (report === null) return null;
+    // The report's draft carries the issue ref the refiner saw; the source
+    // body hash is authoritative (forced by the orchestrator in `check`).
+    if (!isReusable(report, issue, repository, report.draft.issue.updatedAt)) {
+      return null;
+    }
+    return report;
+  }
+
+  const pointer = await store.readLatestReadiness(
+    repository.owner,
+    repository.repo,
+    issue.number,
+  );
+  if (pointer === null) return null;
+
+  const report = await readReportIfExists(store, pointer.analysisId);
+  if (report === null) return null;
+  // The pointer carries the authoritative `updatedAt` recorded at check time.
+  if (!isReusable(report, issue, repository, pointer.updatedAt)) {
+    return null;
+  }
+  return report;
+}
+
+async function readReportIfExists(
+  store: ArtifactStore,
+  analysisId: string,
+): Promise<ReadinessReport | null> {
+  try {
+    return await store.readJson<ReadinessReport>(
+      analysisId,
+      "readiness-report.json",
+    );
+  } catch {
+    return null;
+  }
+}
+
+function isReusable(
+  report: ReadinessReport,
+  issue: GitHubIssue,
+  repository: { owner: string; repo: string },
+  snapshotUpdatedAt: string,
+): boolean {
+  if (report.status !== "READY") return false;
+  if (report.repository.owner !== repository.owner) return false;
+  if (report.repository.repo !== repository.repo) return false;
+  if (report.issueNumber !== issue.number) return false;
+  if (report.sourceBodyHash !== sha256(issue.body)) return false;
+  if (snapshotUpdatedAt !== issue.updatedAt) return false;
+  return true;
 }
 
 function printHumanOutcome(
@@ -198,7 +293,11 @@ function printHumanOutcome(
     `Issue: ${outcome.repository.owner}/${outcome.repository.repo}#${outcome.issueNumber}`,
   );
   if (outcome.applied) {
-    stdout(`Applied refinement (issue updated at ${outcome.updatedAt})`);
+    stdout(
+      `Applied refinement (issue updated at ${outcome.updatedAt}${
+        outcome.source === "reused" ? `; reused prior check ${outcome.reusedFrom ?? ""}` : ""
+      })`,
+    );
     return;
   }
   if (outcome.reason === "declined") {
@@ -206,6 +305,9 @@ function printHumanOutcome(
     return;
   }
   stdout("Proposal generated (not applied) — run interactively to apply it");
+  if (outcome.source === "reused") {
+    stdout(`(reused prior check ${outcome.reusedFrom ?? ""})`);
+  }
 }
 
 async function defaultConfirm(prompt: string): Promise<boolean> {

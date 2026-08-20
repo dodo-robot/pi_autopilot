@@ -10,9 +10,15 @@ export interface AppPaths {
   runDir(runId: string): string;
   /** Absolute path for one artifact inside a run's directory. */
   artifactPath(runId: string, relative: string): string;
+  /**
+   * Stable per-issue pointer path under `runs/_latest/<owner>/<repo>/<n>.json`,
+   * distinct from the per-run directories under `runs/check-*`.
+   */
+  issuePointerPath(owner: string, repo: string, issueNumber: number): string;
 }
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const POINTER_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** Reject run IDs that could escape the runs directory via path traversal. */
 export function assertSafeRunId(runId: string): void {
@@ -50,6 +56,23 @@ export function appPaths(dataDir: string = defaultDataDir()): AppPaths {
         throw new Error(`artifact escapes run directory: ${relative}`);
       }
       return resolved;
+    },
+    issuePointerPath(owner: string, repo: string, issueNumber: number): string {
+      for (const segment of [owner, repo]) {
+        if (!POINTER_SEGMENT_PATTERN.test(segment)) {
+          throw new Error(`unsafe pointer segment: ${JSON.stringify(segment)}`);
+        }
+      }
+      if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+        throw new Error(`unsafe issue number: ${JSON.stringify(issueNumber)}`);
+      }
+      return path.join(
+        runsDir,
+        "_latest",
+        owner,
+        repo,
+        `${issueNumber}.json`,
+      );
     },
   };
 }
