@@ -71,6 +71,8 @@ export interface RunSummary {
 export interface RunServiceDeps {
   /** Repository root to operate on; defaults to the current working directory. */
   cwd?: string;
+  /** Optional foreground progress sink for human-visible execution updates. */
+  onProgress?: (text: string) => void;
   processRunner?: ProcessRunner;
   /** Override the application data directory (tests use a temp dir). */
   dataDir?: string;
@@ -193,6 +195,7 @@ export class RunService {
         refinerModel,
         implementerModel,
         reviewerModel,
+        ...(this.deps.onProgress === undefined ? {} : { onProgress: this.deps.onProgress }),
       });
 
       return await runner2.execute();
@@ -339,6 +342,7 @@ interface RunAttemptDeps {
   refinerModel: ResolvedRoleModel;
   implementerModel: ResolvedRoleModel;
   reviewerModel: ResolvedRoleModel;
+  onProgress?: (text: string) => void;
   /**
    * Preloaded budget counters for a resumed run (attempts/cycles already
    * consumed before the interruption). Defaults to zero for a fresh run
@@ -621,6 +625,7 @@ class RunAttempt {
       env: safeProcessEnv(),
       timeoutMs: this.deps.config.budgets.implementation.timeoutMinutes * 60_000,
     });
+    this.emitImplementerProgress(execution.sessionDir);
     this.attemptSequence += 1;
     this.deps.runStore.recordAttempt({
       runId: this.runId,
@@ -630,6 +635,39 @@ class RunAttempt {
       thinking: this.deps.implementerModel.thinking,
     });
     return execution.result as ImplementerResult;
+  }
+
+  private emitImplementerProgress(sessionDir: string): void {
+    const sink = this.deps.onProgress;
+    if (sink === undefined) return;
+    sink(`Implementer session: ${sessionDir}`);
+    try {
+      const entries = require("node:fs").readdirSync(sessionDir).sort();
+      const jsonl = entries.find((name: string) => name.endsWith(".jsonl"));
+      if (jsonl === undefined) return;
+      const raw = require("node:fs").readFileSync(path.join(sessionDir, jsonl), "utf8");
+      for (const line of raw.split("\n")) {
+        if (line.trim().length === 0) continue;
+        const entry = JSON.parse(line) as any;
+        const content = entry?.message?.content;
+        if (!Array.isArray(content)) continue;
+        for (const part of content) {
+          if (part?.type === "text" && typeof part.text === "string") {
+            const firstLine = part.text.trim().split("\n")[0];
+            if (firstLine.length > 0) sink(`[implementer] ${firstLine}`);
+          }
+          if (part?.type === "toolCall") {
+            const toolName = part.name;
+            const toolPath = part.arguments?.path;
+            sink(
+              `[implementer] tool: ${String(toolName)}${typeof toolPath === "string" ? ` ${toolPath}` : ""}`,
+            );
+          }
+        }
+      }
+    } catch {
+      // Best-effort visibility only; never fail the run for progress rendering.
+    }
   }
 
   /** Returns a terminal RunSummary if the implementer result ends the run, else null. */
@@ -861,7 +899,13 @@ class RunAttempt {
 function buildImplementerPrompt(snapshot: TaskSnapshot): string {
   return [
     "You are the implementer for a bounded, supervised task.",
-    "Implement exactly the task snapshot below. Report COMPLETED only when done.",
+    "",
+    "IMPORTANT: When you finish implementing the task, you MUST call the",
+    "submit_result tool with your outcome (COMPLETED, BLOCKED, NEEDS_REFINEMENT,",
+    "or NEEDS_REPLAN). Do not just write 'COMPLETED' in text. The run will fail",
+    "if submit_result is not called.",
+    "",
+    "Implement exactly the task snapshot below:",
     JSON.stringify(snapshot, null, 2),
   ].join("\n\n");
 }
@@ -878,7 +922,13 @@ function buildResumeCorrectionPrompt(snapshot: TaskSnapshot): string {
     "You are the implementer resuming a bounded, supervised task after an",
     "administrative pause. Continue exactly the task snapshot below using",
     "only the current worktree state. You have no access to any prior",
-    "session transcript. Report COMPLETED only when done.",
+    "session transcript.",
+    "",
+    "IMPORTANT: When you finish, you MUST call the submit_result tool with",
+    "your outcome. Do not just write text. The run will fail if submit_result",
+    "is not called.",
+    "",
+    "Task snapshot:",
     JSON.stringify(snapshot, null, 2),
   ].join("\n\n");
 }
@@ -892,7 +942,15 @@ function buildVerificationCorrectionPrompt(
     "The previous verification run failed. Fix the issues using only the",
     "current worktree state and the verification evidence below. You have",
     "no access to any prior session transcript.",
+    "",
+    "IMPORTANT: When you finish fixing the issues, you MUST call the",
+    "submit_result tool with your outcome. The run will fail if submit_result",
+    "is not called.",
+    "",
+    "Task snapshot:",
     JSON.stringify(snapshot, null, 2),
+    "",
+    "Verification evidence:",
     JSON.stringify(verification, null, 2),
   ].join("\n\n");
 }
@@ -906,7 +964,15 @@ function buildReviewCorrectionPrompt(
     "An independent reviewer requested changes. Address the findings below",
     "using only the current worktree state. You have no access to any prior",
     "session transcript.",
+    "",
+    "IMPORTANT: When you finish addressing the review, you MUST call the",
+    "submit_result tool with your outcome. The run will fail if submit_result",
+    "is not called.",
+    "",
+    "Task snapshot:",
     JSON.stringify(snapshot, null, 2),
+    "",
+    "Review findings:",
     JSON.stringify(review, null, 2),
   ].join("\n\n");
 }
