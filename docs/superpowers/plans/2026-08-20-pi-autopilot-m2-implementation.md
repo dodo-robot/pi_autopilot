@@ -17,7 +17,7 @@
 - Analysis is sequential (single pass over a set); no concurrency.
 - Reuse M1 contracts (`ReadinessService`, `computeReadinessGaps`, `TaskSnapshotSchema`, `ArtifactStore`, `GitHubPort`, `fake-pi`); do not add new agent roles.
 - Keep the full M1 suite green; pass `npm run typecheck`, `npm run build`, and `npm test`.
-- Exit codes: `0` all ready / `--min-ready` satisfied; `2` some need refinement or `--min-ready` unsatisfied; `1` argument/error.
+- Exit codes: `0` executable work exists AND there is no needs-refinement (BLOCKED/AMBIGUOUS/SKIPPED are normal triage outcomes, not errors); `2` zero executable work, any needs-refinement, or `--min-ready` unsatisfied; `1` argument/infrastructure error.
 - Working branch: `feature/pi-autopilot-m2` (checked out; the design spec is already committed here).
 - `package.json.bak-untracked`, `package-lock.json.bak-untracked`, and `requirements.md` in the repo root are untracked scratch/backup files — never add or modify them.
 
@@ -1007,7 +1007,7 @@ program
 - Call `analyst.analyzeIssues({ epicRef, requestedRefs, deep: opts.deep === true })`.
 - `--json` → print `JSON.stringify(report, null, 2)`.
 - Human render → concise table + `executable`/`needsWork`/`summary` + a line noting the persisted `analysisId` (so the user can `autopilot inspect <analysisId>`, though `inspect` reads run records; for M2 just print `analysisId` and note the artifact path).
-- Exit code: `0` if `report.summary.ready === total && no needsRefinement`, else `2`. With `--min-ready N`: if `report.executable.length < N` → `2` (overrides the ready-count logic to force non-zero), else `0`/`2` by the ready rule.
+- Exit code (executability contract): `0` when `report.executable.length > 0` AND `report.summary.needsRefinement === 0` (regardless of BLOCKED/AMBIGUOUS/SKIPPED counts — those are normal triage outcomes, not errors); `2` when `report.executable.length === 0` OR `report.summary.needsRefinement > 0`, OR `--min-ready N` is given and `report.executable.length < N`; `1` on argument/infrastructure error. `--min-ready` must be a positive integer, else exit `1` (argument error).
 
 - [ ] **Step 1: Write the failing integration tests**
 

@@ -71,6 +71,16 @@ Implement the gadget.
 - [ ] A gadget can be toggled
 `;
 
+// An explicit open dependency marker → BLOCKED when #201 is still open.
+const BLOCKED_BODY = `## Objective
+Implement the widget.
+
+depends on: #201
+`;
+
+// No objective heading and no acceptance criteria → NEEDS_REFINEMENT.
+const NEEDS_REFINEMENT_BODY = `some vague idea that lacks a contract\n`;
+
 const EPIC_BODY = `## Objective
 Ship the dashboard epic.
 
@@ -84,6 +94,11 @@ const ISSUE_101 = makeIssue(101, "Fix widget", READY_BODY);
 const ISSUE_102 = makeIssue(102, "Build gadget", CANDIDATE_BODY);
 const ISSUE_29 = makeIssue(29, "Another ready", READY_BODY);
 const ISSUE_30 = makeIssue(30, "Another candidate", CANDIDATE_BODY);
+const ISSUE_201_BLOCKED = makeIssue(201, "Blocked widget", BLOCKED_BODY);
+const ISSUE_202_NEEDS = makeIssue(202, "Vague idea", NEEDS_REFINEMENT_BODY);
+// The dependency target referenced by BLOCKED_BODY; left open so it is
+// unsatisfied.
+const ISSUE_777 = makeIssue(777, "Open dependency target", "just a stub\n");
 
 function completeDraft(number: number): TaskDraft {
   // The readiness gate validates the snapshot against the strict schema,
@@ -360,6 +375,73 @@ describe("autopilot analyze", () => {
     const report = JSON.parse(harness.stdoutLines.join("\n"));
     expect(report.refinerSessions).toBe(2); // both READY-by-contract and candidate
     expect(report.executable).toEqual([101, 102]);
+    expect(harness.github.mutationCalls).toEqual([]);
+  });
+
+  it("mixed set with a READY and a BLOCKED (zero needs-refinement) exits 0", async () => {
+    const root = await createFixtureRepo();
+    const issues = new Map<number, GitHubIssue>([
+      [101, ISSUE_101], // READY (full contract)
+      [201, ISSUE_201_BLOCKED], // BLOCKED (open dependency on #777)
+      [777, ISSUE_777], // open → dependency unsatisfied
+    ]);
+    const harness = makeHarness(root, issues, "analyze-test-mixed-ok");
+
+    await harness.run(["analyze", "101", "201", "--json"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    const report = JSON.parse(harness.stdoutLines.join("\n"));
+    expect(report.summary.ready).toBe(1);
+    expect(report.summary.blocked).toBe(1);
+    expect(report.summary.needsRefinement).toBe(0);
+    expect(report.executable).toEqual([101]);
+    expect(harness.github.mutationCalls).toEqual([]);
+  });
+
+  it("zero executable (all BLOCKED) exits 2", async () => {
+    const root = await createFixtureRepo();
+    const issues = new Map<number, GitHubIssue>([
+      [201, ISSUE_201_BLOCKED], // BLOCKED (open dependency on #777)
+      [777, ISSUE_777], // open → dependency unsatisfied
+    ]);
+    const harness = makeHarness(root, issues, "analyze-test-zero-exec");
+
+    await harness.run(["analyze", "201", "--json"]);
+
+    expect(harness.exitCodes).toEqual([2]);
+    const report = JSON.parse(harness.stdoutLines.join("\n"));
+    expect(report.executable).toEqual([]);
+    expect(report.summary.needsRefinement).toBe(0);
+    expect(report.summary.blocked).toBe(1);
+    expect(harness.github.mutationCalls).toEqual([]);
+  });
+
+  it("all NEEDS_REFINEMENT (zero executable) exits 2", async () => {
+    const root = await createFixtureRepo();
+    const issues = new Map<number, GitHubIssue>([
+      [202, ISSUE_202_NEEDS], // NEEDS_REFINEMENT (no contract)
+    ]);
+    const harness = makeHarness(root, issues, "analyze-test-needs");
+
+    await harness.run(["analyze", "202", "--json"]);
+
+    expect(harness.exitCodes).toEqual([2]);
+    const report = JSON.parse(harness.stdoutLines.join("\n"));
+    expect(report.executable).toEqual([]);
+    expect(report.summary.needsRefinement).toBe(1);
+    expect(harness.github.mutationCalls).toEqual([]);
+  });
+
+  it("invalid --min-ready is an argument error (exit 1)", async () => {
+    const root = await createFixtureRepo();
+    const issues = new Map<number, GitHubIssue>([[101, ISSUE_101]]);
+    const harness = makeHarness(root, issues, "analyze-test-min-invalid");
+
+    await harness.run(["analyze", "101", "--min-ready", "abc", "--json"]);
+
+    expect(harness.exitCodes).toEqual([1]);
+    expect(harness.stdoutLines.join("\n")).toBe("");
+    expect(harness.stderrLines.join("\n")).toMatch(/invalid --min-ready 'abc'/);
     expect(harness.github.mutationCalls).toEqual([]);
   });
 

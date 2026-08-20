@@ -106,14 +106,13 @@ export function registerAnalyzeCommand(
           process.exitCode = code;
         });
         try {
+          const minReady = parseMinReady(opts.minReady);
           const report = await runAnalyze(ref, moreRefs, opts, deps);
           if (opts.json === true) {
             stdout(JSON.stringify(report, null, 2));
           } else {
             printHumanReport(report, stdout);
           }
-          const minReady =
-            opts.minReady !== undefined ? Number(opts.minReady) : undefined;
           setExitCode(exitCodeFor(report, minReady));
         } catch (error) {
           stderr(
@@ -125,11 +124,46 @@ export function registerAnalyzeCommand(
     );
 }
 
+/**
+ * Validate the `--min-ready` flag as a positive integer. Throws an argument
+ * error (caught by the command action → exit 1) when the flag is absent and
+ * returns `undefined`; otherwise it parses and rejects anything that is not a
+ * whole number greater than zero (so `--min-ready abc`, `0`, `-1`, and `1.5`
+ * are all argument errors rather than silently-non-zero exit 2).
+ */
+function parseMinReady(raw: string | undefined): number | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(
+      `invalid --min-ready '${raw}' (expected a positive integer)`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Exit-code contract (the documented M2 executability contract):
+ *
+ * - `0` when there is executable work and nothing needs refinement,
+ *   regardless of BLOCKED/AMBIGUOUS/SKIPPED counts (those are normal triage
+ *   outcomes, not errors).
+ * - `2` when there is no executable work, any issue still needs refinement,
+ *   or `--min-ready N` is given and fewer than N issues are executable.
+ *
+ * (Exit `1` for argument/infrastructure errors is handled by the command's
+ * action catch block, not here.)
+ */
 function exitCodeFor(report: BacklogReport, minReady: number | undefined): number {
-  if (minReady !== undefined && report.executable.length < minReady) {
+  if (report.executable.length === 0) {
     return 2;
   }
-  if (report.summary.needsRefinement > 0 || report.executable.length === 0) {
+  if (report.summary.needsRefinement > 0) {
+    return 2;
+  }
+  if (minReady !== undefined && report.executable.length < minReady) {
     return 2;
   }
   return 0;
