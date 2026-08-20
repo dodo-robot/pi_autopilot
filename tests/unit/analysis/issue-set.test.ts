@@ -64,6 +64,49 @@ describe("collectEpicIssueRefs", () => {
   it("detects an epic body even when the reference is not on the first line", () => {
     expect(isEpicBody("- [ ] prose line\n- [ ] #1")).toBe(true);
   });
+
+  it("extracts GitHub issue-link bullets like `- [#174](url) Task 1: ...`", () => {
+    // The shape used by real Minerva epics (e.g. engine-core epic #7).
+    const body = [
+      "## Sub-issues",
+      "- [#174](https://github.com/acme/widgets/issues/174) Task 1: Define types",
+      "- [#175](https://github.com/acme/widgets/issues/175) Task 2: Parser",
+      "- [#176](https://github.com/acme/widgets/issues/176) Task 3: Evaluator",
+    ].join("\n");
+    const { issues, unresolvedProseLines } = collectEpicIssueRefs(body);
+    expect(issues).toEqual([174, 175, 176]);
+    expect(unresolvedProseLines).toEqual([]);
+    expect(isEpicBody(body)).toBe(true);
+  });
+
+  it("extracts bare issue bullets like `- #42 Task x`", () => {
+    const body = [
+      "- #101 Do the thing",
+      "- #102 another",
+      "- A prose-only bullet with no reference",
+    ].join("\n");
+    const { issues, unresolvedProseLines } = collectEpicIssueRefs(body);
+    expect(issues).toEqual([101, 102]);
+    expect(unresolvedProseLines).toEqual([3]);
+    expect(isEpicBody(body)).toBe(true);
+  });
+
+  it("does not treat a non-bullet paragraph mention of #n as a task ref", () => {
+    const body =
+      "Reference the existing design docs, see #174 for context.\nNo bullet here.";
+    expect(collectEpicIssueRefs(body).issues).toEqual([]);
+    expect(isEpicBody(body)).toBe(false);
+  });
+
+  it("records prose-only bullet lines as unresolved", () => {
+    const body = [
+      "- First task bullet (#201)",
+      "- Some prose bullet with no issue reference",
+    ].join("\n");
+    const { issues, unresolvedProseLines } = collectEpicIssueRefs(body);
+    expect(issues).toEqual([201]);
+    expect(unresolvedProseLines).toEqual([2]);
+  });
 });
 
 describe("resolveIssueSet", () => {

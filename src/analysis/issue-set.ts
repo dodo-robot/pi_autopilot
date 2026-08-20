@@ -11,8 +11,10 @@ export interface ResolvedIssueSet {
   unresolvedProseLines: number[];
 }
 
-/** Markdown checkbox prefix: `- [ ]`, `- [x]`, `- [X]`, with flexible spacing. */
-const CHECKBOX_PREFIX = /^-\s*\[[ xX]\]\s+/;
+/** Markdown list-bullet prefix: `- ` or `* ` (with flexible leading space).
+ * Covers `- [ ] / - [x]` checkboxes, `- [#174](url)` GitHub issue-link
+ * bullets (the shape real Minerva epics use), and bare `- #n` bullets. */
+const BULLET_PREFIX = /^\s*[-*]\s+/;
 
 /** Qualified issue reference: `<owner>/<repo>#<number>`. */
 const QUALIFIED_REF = /([^/\s]+)\/([^/\s]+)#(\d+)/g;
@@ -21,17 +23,18 @@ const QUALIFIED_REF = /([^/\s]+)\/([^/\s]+)#(\d+)/g;
 const BARE_REF = /#(\d+)\b/g;
 
 /**
- * True iff the body is an epic: it contains `- [ ]` checklist items AND at
- * least one item references an issue (`#\d+` or `owner/repo#\d+`).
+ * True iff the body is an epic: it contains Markdown list-bullet task items
+ * (`- [ ] ...`, `- [#174](url) ...`, or `- #174 ...`) AND at least one bullet
+ * references an issue (`#\d+` or `owner/repo#\d+`).
  */
 export function isEpicBody(body: string): boolean {
   const lines = body.split(/\r?\n/);
   let hasChecklist = false;
   let hasIssueRef = false;
   for (const line of lines) {
-    if (!CHECKBOX_PREFIX.test(line)) continue;
+    if (!BULLET_PREFIX.test(line)) continue;
     hasChecklist = true;
-    const remainder = line.replace(CHECKBOX_PREFIX, "");
+    const remainder = line.replace(BULLET_PREFIX, "");
     QUALIFIED_REF.lastIndex = 0;
     BARE_REF.lastIndex = 0;
     if (QUALIFIED_REF.test(remainder) || BARE_REF.test(remainder)) {
@@ -43,17 +46,20 @@ export function isEpicBody(body: string): boolean {
 }
 
 /**
- * Extract issue references from an epic body's Markdown checklist lines.
+ * Extract issue references from an epic body's Markdown list-bullet lines
+ * (`- [ ] ...`, `- [#174](url) ...`, `- #174 ...`, or plain `- ...`).
  *
- * For each `- [ ]` line, run two ordered passes over the post-prefix text:
+ * For each bullet line, run two ordered passes over the post-prefix text:
  *   1. Qualified refs (`owner/repo#n`) first.
  *   2. Bare refs (`#n`) on a copy with step-1 matches removed, so a
- *      qualified ref never double-counts. This also captures `##102`.
+ *      qualified ref never double-counts. This also captures `##102` and the
+ *      `#174` inside a `[#174](url)` GitHub issue link.
  *
  * Every reference is collected into `issues` (upstream de-dupes); a line
- * that yields at least one reference is "resolved". A checklist line with no
+ * that yields at least one reference is "resolved". A bullet line with no
  * reference is prose-only and its 1-based line number is recorded in
- * `unresolvedProseLines`.
+ * `unresolvedProseLines`. Non-bullet lines (prose paragraphs, headings)
+ * are ignored.
  */
 export function collectEpicIssueRefs(body: string): {
   issues: number[];
@@ -65,9 +71,9 @@ export function collectEpicIssueRefs(body: string): {
   const lines = body.split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]!;
-    if (!CHECKBOX_PREFIX.test(line)) continue;
+    if (!BULLET_PREFIX.test(line)) continue;
 
-    const remainder = line.replace(CHECKBOX_PREFIX, "");
+    const remainder = line.replace(BULLET_PREFIX, "");
     const lineIssues: number[] = [];
 
     // Pass 1: qualified refs, tracking their matched substrings for removal.
