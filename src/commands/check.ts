@@ -1,19 +1,12 @@
 import { Command } from "commander";
 import type { ResolvedRoleModel } from "../config/load-config.js";
-import {
-  DEFAULT_PI_MODEL,
-  loadRepositoryConfig,
-  resolveRoleModel,
-} from "../config/load-config.js";
-import type { AutopilotConfig, RoleModelEntry, RoleModelOverride } from "../config/schema.js";
-import { ThinkingLevelSchema } from "../config/schema.js";
+import { loadRepositoryConfig } from "../config/load-config.js";
+import type { AutopilotConfig, RoleModelEntry } from "../config/schema.js";
 import type { GitHubPort } from "../github/github-adapter.js";
 import { GitHubAdapter } from "../github/github-adapter.js";
 import type { RepositoryContext } from "../github/repository-context.js";
-import {
-  assertRepositoryMatches,
-  resolveRepositoryContext,
-} from "../github/repository-context.js";
+import { resolveRepositoryContext } from "../github/repository-context.js";
+import { resolveIssueRef, resolveRefinerModel, resolveRefinerTimeout } from "./args.js";
 import { ArtifactStore } from "../persistence/artifact-store.js";
 import { PiRunner } from "../pi/pi-runner.js";
 import { appPaths } from "../platform/paths.js";
@@ -115,8 +108,15 @@ async function runCheck(
       : await GitHubAdapter.create(ctx.root, runner);
 
   const paths: AppPaths = appPaths(deps.dataDir);
-  const refinerModel = resolveRefinerModel(opts, config, deps.piDefaultModel);
-  const refinerTimeoutMs = resolveRefinerTimeout(opts, config);
+  const refinerModel = resolveRefinerModel(
+    {
+      ...(opts.model === undefined ? {} : { model: opts.model }),
+      ...(opts.thinking === undefined ? {} : { thinking: opts.thinking }),
+    },
+    config,
+    deps.piDefaultModel,
+  );
+  const refinerTimeoutMs = resolveRefinerTimeout(opts.refinerTimeout, config);
   const readiness =
     deps.createReadiness !== undefined
       ? deps.createReadiness({ repository: ctx, config, github, refinerModel, refinerTimeoutMs })
@@ -132,70 +132,6 @@ async function runCheck(
         });
 
   return readiness.check(number);
-}
-
-function resolveIssueRef(
-  issueRef: string,
-  ctx: RepositoryContext,
-): { number: number } {
-  const trimmed = issueRef.trim();
-  const bare = /^(\d+)$/.exec(trimmed);
-  if (bare !== null) {
-    return { number: Number(bare[1]) };
-  }
-  const qualified = /^([^/]+)\/([^/]+)#(\d+)$/.exec(trimmed);
-  if (qualified !== null) {
-    assertRepositoryMatches(ctx, {
-      owner: qualified[1] ?? "",
-      repo: qualified[2] ?? "",
-    });
-    return { number: Number(qualified[3]) };
-  }
-  throw new Error(
-    `invalid issue reference '${issueRef}' (expected <number> or <owner>/<repo>#<number>)`,
-  );
-}
-
-function resolveRefinerModel(
-  opts: CheckOptions,
-  config: AutopilotConfig,
-  piDefault: RoleModelEntry | undefined,
-): ResolvedRoleModel {
-  const override: RoleModelOverride = {};
-  if (opts.model !== undefined) {
-    override.model = opts.model;
-  }
-  if (opts.thinking !== undefined) {
-    const parsed = ThinkingLevelSchema.safeParse(opts.thinking);
-    if (!parsed.success) {
-      throw new Error(
-        `invalid thinking level '${opts.thinking}' (expected one of ${ThinkingLevelSchema.options.join(", ")})`,
-      );
-    }
-    override.thinking = parsed.data;
-  }
-  return resolveRoleModel(
-    "refiner",
-    override.model !== undefined || override.thinking !== undefined
-      ? override
-      : null,
-    config.agents,
-    null,
-    piDefault ?? DEFAULT_PI_MODEL,
-  );
-}
-
-/**
- * Resolve the refiner session timeout in milliseconds. Precedence:
- * explicit `--refiner-timeout` flag, then the repository policy's
- * `budgets.refiner.timeoutMinutes`, then the 5-minute built-in default.
- */
-function resolveRefinerTimeout(
-  opts: CheckOptions,
-  config: AutopilotConfig,
-): number {
-  const minutes = opts.refinerTimeout ?? config.budgets.refiner.timeoutMinutes;
-  return minutes * 60_000;
 }
 
 function printHumanReport(
