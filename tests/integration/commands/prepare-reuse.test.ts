@@ -163,6 +163,8 @@ type Harness = {
   run: (args: string[]) => Promise<unknown>;
   /** Simulate a prior `autopilot check` that produced a READY snapshot. */
   prepareReady: () => Promise<void>;
+  /** Simulate a prior `autopilot check` that produced a NEEDS_REFINEMENT report. */
+  prepareNonReady: () => Promise<void>;
 };
 
 function makeHarness(
@@ -240,6 +242,30 @@ function makeHarness(
         paths: appPaths(dataDir),
         refinerModel: { model: "m", thinking: "high", source: "repository" },
         analysisId: () => "prior-check-42",
+        now: () => "2026-08-18T00:00:00.000Z",
+      });
+      await service.check(42);
+    },
+    prepareNonReady: async () => {
+      // Build a real ReadinessService bound to the same dataDir/runner so a
+      // NEEDS_REFINEMENT analysis writes a report (no pointer/snapshot) under
+      // a KNOWN analysisId that `prepare --from-check` can later look up.
+      const config = await loadRepositoryConfig(root);
+      const service = new ReadinessService({
+        repository: {
+          root,
+          repository: { owner: "acme", repo: "widgets" },
+          originUrl: "git@github.com:acme/widgets.git",
+          currentBranch: "main",
+          isClean: true,
+        },
+        config,
+        github,
+        pi: runner,
+        artifacts: new ArtifactStore(appPaths(dataDir)),
+        paths: appPaths(dataDir),
+        refinerModel: { model: "m", thinking: "high", source: "repository" },
+        analysisId: () => "prior-check-needs-refinement",
         now: () => "2026-08-18T00:00:00.000Z",
       });
       await service.check(42);
@@ -369,5 +395,43 @@ describe("autopilot prepare reuse", () => {
     expect(harness.runner.requests).toHaveLength(1);
     expect(harness.exitCodes).toEqual([0]);
     expect(harness.runner.requests[0]?.role).toBe("refiner");
+  });
+
+  it("falls back to fresh when --from-check names a NEEDS_REFINEMENT report", async () => {
+    // The shared refiner returns NEEDS_REFINEMENT for the first invocation
+    // (the prior `check`) and READY thereafter (prepare's fresh fallback).
+    let calls = 0;
+    const stateful = (): RefinerResult => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          outcome: "NEEDS_REFINEMENT",
+          taskDraft: completeDraft(),
+          missingInformation: [],
+          dependencies: [],
+          ambiguities: [],
+          suggestions: ["clarify the validation strategy"],
+        };
+      }
+      return ready();
+    };
+
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const harness = makeHarness(root, stateful, github, async () => true);
+
+    // Prior check: produces a NEEDS_REFINEMENT report under a KNOWN id.
+    await harness.prepareNonReady();
+    expect(harness.runner.requests).toHaveLength(1);
+
+    await harness.run(["prepare", "42", "--from-check", "prior-check-needs-refinement", "--json"]);
+
+    // A non-READY report is not reusable: prepare falls back to a fresh refiner.
+    expect(harness.runner.requests).toHaveLength(2);
+    expect(harness.runner.requests[1]?.role).toBe("refiner");
+    expect(harness.exitCodes).toEqual([0]);
+
+    const outcome = JSON.parse(harness.stdoutLines.join("\n"));
+    expect(outcome.source).toBe("fresh");
   });
 });
