@@ -31,6 +31,8 @@ export function isEpicBody(body: string): boolean {
     if (!CHECKBOX_PREFIX.test(line)) continue;
     hasChecklist = true;
     const remainder = line.replace(CHECKBOX_PREFIX, "");
+    QUALIFIED_REF.lastIndex = 0;
+    BARE_REF.lastIndex = 0;
     if (QUALIFIED_REF.test(remainder) || BARE_REF.test(remainder)) {
       hasIssueRef = true;
       break;

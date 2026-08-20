@@ -55,6 +55,9 @@ describe("collectEpicIssueRefs", () => {
     expect(isEpicBody("- [ ] #1\n- [ ] #2")).toBe(true);
     expect(isEpicBody("Just prose")).toBe(false);
   });
+  it("detects an epic body even when the reference is not on the first line", () => {
+    expect(isEpicBody("- [ ] prose line\n- [ ] #1")).toBe(true);
+  });
 });
 
 describe("resolveIssueSet", () => {
