@@ -9,8 +9,11 @@ workers, never owners of durable workflow state. See
 design.
 
 This is Milestone 1 (M1) — a supervised task runner for one issue at a
-time, started explicitly by a developer. See "M1 non-goals" below for what
-it deliberately does not do yet.
+time, started explicitly by a developer — plus Milestone 2 (M2), a
+read-only backlog analyst (`autopilot analyze`) that scans an epic or an
+explicit issue set and records which tasks are ready to execute, without
+mutating GitHub. See "M1 non-goals" below for what M1 deliberately does
+not do yet.
 
 ## Prerequisites
 
@@ -106,6 +109,7 @@ worktree and opens a PR on success.
 autopilot check <issue>            # read-only readiness assessment
 autopilot prepare <issue>          # draft + approve a managed issue update
 autopilot run <issue>              # execute a ready issue end to end
+autopilot analyze <ref>            # assess backlog readiness across an epic or explicit issue set (read-only)
 autopilot status <run-id>          # current stage + next valid action
 autopilot inspect <run-id>         # snapshot, evidence, model usage, history
 autopilot resume <run-id>          # fresh correction attempt for a BLOCKED run
@@ -128,6 +132,7 @@ the refiner session timeout (falling back to the repository policy's
 | `check` | `READY` | thrown error (invalid ref, config, etc.) | `NEEDS_REFINEMENT` |
 | `prepare` | always (declined/applied/`--json` preview) | thrown error, or the issue changed during analysis | — |
 | `run` | `PR_OPEN` | thrown error | `NEEDS_REFINEMENT` or `BLOCKED` |
+| `analyze` | executable work exists and no needs-refinement (or `--min-ready` satisfied) | argument/infrastructure error | zero executable work, any needs-refinement, or `--min-ready` unsatisfied |
 | `resume` | `PR_OPEN` | thrown error (including "not BLOCKED") | `NEEDS_REFINEMENT` or `BLOCKED` |
 | `status` | run found | run not found, or thrown error | — |
 | `inspect` | run found | run not found, or thrown error | — |
