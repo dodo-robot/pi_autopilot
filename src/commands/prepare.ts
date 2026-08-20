@@ -26,6 +26,11 @@ export interface PrepareCommandDeps extends CheckCommandDeps {
    * to an interactive readline prompt; tests inject a stub.
    */
   confirm?: (prompt: string) => Promise<boolean>;
+  /**
+   * Ask the operator to answer one refinement question in free-form text.
+   * Defaults to an interactive readline prompt; tests inject a stub.
+   */
+  answer?: (prompt: string) => Promise<string>;
 }
 
 interface PrepareOptions {
@@ -40,7 +45,7 @@ interface PrepareOutcome {
   repository: { owner: string; repo: string };
   issueNumber: number;
   applied: boolean;
-  reason: "approved" | "declined" | "json-proposal";
+  reason: "approved" | "declined" | "json-proposal" | "cancelled";
   /** `updatedAt` of the analyzed issue (pre-edit). */
   updatedAt: string;
   /** "reused" when a prior READY check snapshot was reused, else "fresh". */
@@ -150,8 +155,45 @@ async function runPrepare(
     opts.fromCheck,
   );
   const source: PrepareOutcome["source"] = reused === null ? "fresh" : "reused";
-  const report: ReadinessReport =
-    reused ?? (await readiness.check(number));
+  let report: ReadinessReport = reused ?? (await readiness.check(number));
+
+  if (opts.json !== true) {
+    const askAnswer = deps.answer ?? defaultAnswer;
+    const answers: Array<{ question: string; answer: string }> = [];
+    while (report.status !== "READY") {
+      const question = report.missingInformation[0] ?? report.ambiguities[0]?.description;
+      if (question === undefined) break;
+      const prompt = `Clarification needed:\n${question}\n\nAnswer (or 'cancel'): `;
+      let answer = "";
+      let emptyAnswers = 0;
+      while (answer.trim().length === 0) {
+        answer = await askAnswer(prompt);
+        if (answer.trim().toLowerCase() === "cancel") {
+          return {
+            repository: report.repository,
+            issueNumber: number,
+            applied: false,
+            reason: "cancelled",
+            updatedAt: issue.updatedAt,
+            source,
+            ...(reused !== null ? { reusedFrom: reused.analysisId } : {}),
+          };
+        }
+        if (answer.trim().length === 0) {
+          emptyAnswers += 1;
+          if (emptyAnswers >= 2) {
+            throw new Error("interactive clarification required but no usable stdin answer was available");
+          }
+        }
+      }
+      answers.push({ question, answer: answer.trim() });
+      if (answers.length > 10) {
+        throw new Error("maximum number of clarification questions exceeded");
+      }
+      report = await readiness.check(number, answers);
+    }
+  }
+
   const proposedBody = upsertRefinementSection(issue.body, report.draft);
   const diff = renderUnifiedDiff(issue.body, proposedBody);
 
@@ -304,6 +346,10 @@ function printHumanOutcome(
     stdout("Declined — no changes made to the issue");
     return;
   }
+  if (outcome.reason === "cancelled") {
+    stdout("Cancelled — no changes made to the issue");
+    return;
+  }
   stdout("Proposal generated (not applied) — run interactively to apply it");
   if (outcome.source === "reused") {
     stdout(`(reused prior check ${outcome.reusedFrom ?? ""})`);
@@ -316,6 +362,16 @@ async function defaultConfirm(prompt: string): Promise<boolean> {
   try {
     const answer = (await rl.question(`${prompt} [y/N] `)).trim().toLowerCase();
     return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+async function defaultAnswer(prompt: string): Promise<string> {
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await rl.question(`${prompt} `)).trim();
   } finally {
     rl.close();
   }

@@ -93,7 +93,7 @@ async function runIssue(
   const { number } = resolveIssueRef(issueRef, ctx);
 
   const overrides = resolveOverrides(opts);
-  const service = new RunService(deps);
+  const service = new RunService({ ...deps, onProgress: stdout });
   const summary = await service.start(number, overrides);
 
   if (opts.json !== true) {

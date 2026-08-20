@@ -178,9 +178,10 @@ async function createFixtureRepo(yamlOverride?: string): Promise<string> {
 
 function makeHarness(
   root: string,
-  refinerResult: RefinerResult,
+  refinerResult: RefinerResult | RefinerResult[],
   github: FakeGitHub,
   confirm: (prompt: string) => Promise<boolean>,
+  answer?: (prompt: string) => Promise<string>,
 ): {
   exitCodes: number[];
   stdoutLines: string[];
@@ -193,26 +194,44 @@ function makeHarness(
   const stderrLines: string[] = [];
   const dataDir = mkdtempSync(path.join(tmpdir(), "ap-prepare-data-"));
   tempDirs.push(dataDir);
-  const runner = new FakeRefinerRunner(refinerResult);
+  const refinerResults = Array.isArray(refinerResult) ? refinerResult : [refinerResult];
+  const runner = new FakeRefinerRunner(refinerResults[0]!);
 
   const deps: PrepareCommandDeps = {
     cwd: root,
     dataDir,
     createGitHub: async () => github,
-    createReadiness: (d) =>
-      new ReadinessService({
+    createReadiness: (d) => {
+      let index = 0;
+      return new ReadinessService({
         repository: d.repository,
         config: d.config,
         github: d.github,
-        pi: runner,
+        pi: {
+          run: async (request) => {
+            const current = refinerResults[index] ?? refinerResults[refinerResults.length - 1]!;
+            index += 1;
+            runner.requests.push(request);
+            return {
+              result: current,
+              exitCode: 0,
+              durationMs: 1,
+              stdout: "",
+              stderr: "",
+              resultPath: path.join(request.diagnosticsDir, "result.json"),
+            };
+          },
+        },
         artifacts: new ArtifactStore(appPaths(dataDir)),
         paths: appPaths(dataDir),
         refinerModel: d.refinerModel,
         refinerTimeoutMs: d.refinerTimeoutMs,
         analysisId: () => "prepare-test-42",
         now: () => "2026-08-18T00:00:00.000Z",
-      }),
+      });
+    },
     confirm,
+    answer,
     stdout: (text) => stdoutLines.push(text),
     stderr: (text) => stderrLines.push(text),
     setExitCode: (code) => exitCodes.push(code),
@@ -236,6 +255,18 @@ describe("autopilot prepare", () => {
     missingInformation: [],
     dependencies: [],
     ambiguities: [],
+  };
+
+  const needsRefinementRefiner: RefinerResult = {
+    outcome: "NEEDS_REFINEMENT",
+    taskDraft: {
+      ...completeDraft(),
+      objective: "",
+    },
+    missingInformation: ["What is the expected UX for expired sessions?"],
+    dependencies: [],
+    ambiguities: [{ type: "PRODUCT", description: "Should expired sessions hard-fail or redirect to login?" }],
+    suggestions: ["Clarify the expected UX for expired sessions."],
   };
 
   it("applies the managed refinement after explicit approval", async () => {
@@ -267,6 +298,137 @@ describe("autopilot prepare", () => {
     );
     expect(github.calls).not.toContain("createIssueComment");
     expect(github.calls).not.toContain("createPullRequest");
+  });
+
+  it("loops through one question at a time, then asks final approval when refinement becomes ready", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const prompts: string[] = [];
+    const answers: string[] = [];
+    const secondReady: RefinerResult = {
+      ...readyRefiner,
+      taskDraft: {
+        ...completeDraft(),
+        context: "The auth module owns session refresh. Answer incorporated: redirect to login.",
+      },
+    };
+    const harness = makeHarness(
+      root,
+      [needsRefinementRefiner, secondReady],
+      github,
+      async (prompt) => {
+        prompts.push(prompt);
+        return true;
+      },
+      async (prompt) => {
+        answers.push(prompt);
+        return "Redirect to login";
+      },
+    );
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    expect(answers).toEqual([
+      "Clarification needed:\nWhat is the expected UX for expired sessions?\n\nAnswer (or 'cancel'): ",
+    ]);
+    expect(prompts).toContain("Apply the proposed refinement to issue #42?");
+    expect(harness.runner.requests).toHaveLength(2);
+    expect(harness.runner.requests[1]?.prompt).toContain("Operator clarifications collected during this prepare session");
+    expect(harness.runner.requests[1]?.prompt).toContain("Q: What is the expected UX for expired sessions?");
+    expect(harness.runner.requests[1]?.prompt).toContain("A: Redirect to login");
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(1);
+    expect(github.issue.body).toContain("Answer incorporated: redirect to login.");
+  });
+
+  it("re-prompts on empty answers before continuing", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const answerPrompts: string[] = [];
+    const secondReady: RefinerResult = {
+      ...readyRefiner,
+      taskDraft: {
+        ...completeDraft(),
+        context: "The auth module owns session refresh. Answer incorporated: redirect to login.",
+      },
+    };
+    let answers = 0;
+    const harness = makeHarness(
+      root,
+      [needsRefinementRefiner, secondReady],
+      github,
+      async () => true,
+      async (prompt) => {
+        answerPrompts.push(prompt);
+        answers += 1;
+        return answers === 1 ? "   " : "Redirect to login";
+      },
+    );
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    expect(answerPrompts).toEqual([
+      "Clarification needed:\nWhat is the expected UX for expired sessions?\n\nAnswer (or 'cancel'): ",
+      "Clarification needed:\nWhat is the expected UX for expired sessions?\n\nAnswer (or 'cancel'): ",
+    ]);
+    expect(harness.runner.requests).toHaveLength(2);
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(1);
+  });
+
+  it("cancels cleanly when the operator enters cancel", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const harness = makeHarness(
+      root,
+      needsRefinementRefiner,
+      github,
+      async () => true,
+      async () => "cancel",
+    );
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    expect(harness.stdoutLines.join("\n")).toContain("Cancelled");
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
+  });
+
+  it("fails clearly when interactive clarification has no stdin available", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const harness = makeHarness(
+      root,
+      needsRefinementRefiner,
+      github,
+      async () => true,
+      async () => "",
+    );
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([1]);
+    expect(harness.stderrLines.join("\n")).toContain("interactive clarification required but no usable stdin answer was available");
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
+  });
+
+  it("fails safely when the question guard is exceeded", async () => {
+    const root = await createFixtureRepo();
+    const github = new FakeGitHub(issue);
+    const repeated = Array.from({ length: 12 }, () => needsRefinementRefiner);
+    const harness = makeHarness(
+      root,
+      repeated,
+      github,
+      async () => true,
+      async () => "Redirect to login",
+    );
+
+    await harness.run(["prepare", "42"]);
+
+    expect(harness.exitCodes).toEqual([1]);
+    expect(harness.stderrLines.join("\n")).toContain("maximum number of clarification questions");
+    expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
   });
 
   it("makes zero mutation calls when the operator declines", async () => {

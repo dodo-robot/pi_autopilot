@@ -93,6 +93,7 @@ type AnyRoleResult = PiExecution["result"];
 class ScriptedPiRunner implements RunPiRunner {
   readonly requests: PiRunRequest[] = [];
   private readonly queues = new Map<Role, AnyRoleResult[]>();
+  onRun?: (request: PiRunRequest) => void;
 
   script(role: Role, entries: AnyRoleResult[]): void {
     this.queues.set(role, [...entries]);
@@ -100,6 +101,7 @@ class ScriptedPiRunner implements RunPiRunner {
 
   async run(request: PiRunRequest): Promise<PiExecution> {
     this.requests.push(request);
+    this.onRun?.(request);
     const queue = this.queues.get(request.role);
     if (queue === undefined || queue.length === 0) {
       throw new Error(`no scripted response left for role ${request.role}`);
@@ -121,6 +123,7 @@ class ScriptedPiRunner implements RunPiRunner {
       stdout: "",
       stderr: "",
       resultPath: path.join(request.diagnosticsDir, "result.json"),
+      sessionDir: request.sessionDir,
     };
   }
 }
@@ -357,6 +360,34 @@ describe("autopilot run", () => {
       thinking: "high",
       source: "cli",
     });
+  });
+
+  it("prints implementer session visibility during the implementation stage", async () => {
+    const { root } = await createFixtureRepo("run-cmd-progress");
+    const harness = makeHarness("run-cmd-progress", root);
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-cmd-progress")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.onRun = (request) => {
+      if (request.role !== "implementer") return;
+      mkdirSync(request.sessionDir, { recursive: true });
+      writeFileSync(
+        path.join(request.sessionDir, "progress.jsonl"),
+        [
+          JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "I'll read the evaluator references first." }] } }),
+          JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: "minerva/semantic/model.py" } }] } }),
+        ].join("\n") + "\n",
+        "utf8",
+      );
+    };
+
+    await harness.run(["run", "42"]);
+
+    const output = harness.stdoutLines.join("\n");
+    expect(output).toContain("Implementer session:");
+    expect(output).toContain("implementer-1/session");
+    expect(output).toContain("[implementer] I'll read the evaluator references first.");
+    expect(output).toContain("[implementer] tool: read minerva/semantic/model.py");
   });
 
   it("exits 0 for PR_OPEN", async () => {

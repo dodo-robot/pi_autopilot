@@ -69,6 +69,7 @@ export interface PiExecution {
   stdout: string;
   stderr: string;
   resultPath: string;
+  sessionDir: string;
 }
 
 export class PiRunError extends Error {
@@ -226,6 +227,7 @@ export class PiRunner {
       stdout: processResult.stdout,
       stderr: processResult.stderr,
       resultPath,
+      sessionDir: request.sessionDir,
     };
   }
 }

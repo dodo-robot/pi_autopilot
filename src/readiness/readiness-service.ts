@@ -213,7 +213,10 @@ export class ReadinessService {
     this.now = deps.now ?? (() => new Date().toISOString());
   }
 
-  async check(issueNumber: number): Promise<ReadinessReport> {
+  async check(
+    issueNumber: number,
+    clarifications: Array<{ question: string; answer: string }> = [],
+  ): Promise<ReadinessReport> {
     const issue = await this.deps.github.getIssue(issueNumber);
     const sourceBodyHash = sha256(issue.body);
     const analysisId = this.analysisId(issueNumber);
@@ -224,6 +227,7 @@ export class ReadinessService {
       issue,
       config: this.deps.config,
       sourceBodyHash,
+      clarifications,
     });
 
     const execution = await this.deps.pi.run({
@@ -238,7 +242,25 @@ export class ReadinessService {
       env: safeProcessEnv(),
       timeoutMs: this.refinerTimeoutMs,
     });
-    const refiner = execution.result as RefinerResult;
+    const rawRefiner = execution.result as RefinerResult & {
+      dependencies?: TaskDependency[];
+      missingInformation?: string[];
+      ambiguities?: Ambiguity[];
+      suggestions?: string[];
+    };
+    const refiner: RefinerResult = {
+      ...rawRefiner,
+      ...(rawRefiner.outcome === "FAILED"
+        ? {}
+        : {
+            missingInformation: rawRefiner.missingInformation ?? [],
+            dependencies: rawRefiner.dependencies ?? [],
+            ambiguities: rawRefiner.ambiguities ?? [],
+            ...(rawRefiner.outcome === "NEEDS_REFINEMENT"
+              ? { suggestions: rawRefiner.suggestions ?? [] }
+              : {}),
+          }),
+    } as RefinerResult;
 
     // The orchestrator owns the source body hash; the refiner's copy is
     // never trusted for the immutable snapshot.

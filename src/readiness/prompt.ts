@@ -7,6 +7,7 @@ export interface RefinerPromptInput {
   issue: GitHubIssue;
   config: AutopilotConfig;
   sourceBodyHash: string;
+  clarifications?: Array<{ question: string; answer: string }>;
 }
 
 /**
@@ -21,6 +22,12 @@ export function buildRefinerPrompt(input: RefinerPromptInput): string {
     .join("\n");
   const body =
     input.issue.body.length > 0 ? input.issue.body : "(empty issue body)";
+  const clarifications =
+    input.clarifications !== undefined && input.clarifications.length > 0
+      ? `\n\nOperator clarifications collected during this prepare session\n----------------------------------------------------------\n${input.clarifications
+          .map((item) => `- Q: ${item.question}\n  A: ${item.answer}`)
+          .join("\n")}`
+      : "";
 
   return `You are the Refiner role of an autonomous software development orchestrator.
 
@@ -78,5 +85,5 @@ ${verifyCommands}
 
 Issue body
 ----------
-${body}`;
+${body}${clarifications}`;
 }

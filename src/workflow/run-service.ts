@@ -897,13 +897,25 @@ class RunAttempt {
 }
 
 function buildImplementerPrompt(snapshot: TaskSnapshot): string {
+  const resultExample = {
+    outcome: "COMPLETED",
+    summary: "Brief description of what was implemented",
+    changedPaths: ["path/to/file1.py", "path/to/file2.py"],
+    commandsAttempted: ["uv run pytest"],
+    unresolvedProblems: [],
+    evidenceLocations: []
+  };
+  
   return [
     "You are the implementer for a bounded, supervised task.",
     "",
-    "IMPORTANT: When you finish implementing the task, you MUST call the",
-    "submit_result tool with your outcome (COMPLETED, BLOCKED, NEEDS_REFINEMENT,",
-    "or NEEDS_REPLAN). Do not just write 'COMPLETED' in text. The run will fail",
-    "if submit_result is not called.",
+    "IMPORTANT: When you finish implementing the task, you MUST call",
+    "submit_result with a JSON payload like this:",
+    JSON.stringify(resultExample, null, 2),
+    "",
+    "All fields are required. Use outcome BLOCKED if you cannot proceed,",
+    "NEEDS_REFINEMENT if requirements are unclear, or NEEDS_REPLAN if the",
+    "approach is fundamentally wrong.",
     "",
     "Implement exactly the task snapshot below:",
     JSON.stringify(snapshot, null, 2),
@@ -918,15 +930,24 @@ function buildImplementerPrompt(snapshot: TaskSnapshot): string {
  * still valid, is reconciled separately by `RecoveryService`).
  */
 function buildResumeCorrectionPrompt(snapshot: TaskSnapshot): string {
+  const resultExample = {
+    outcome: "COMPLETED",
+    summary: "Brief description",
+    changedPaths: ["file1.py"],
+    commandsAttempted: ["uv run pytest"],
+    unresolvedProblems: [],
+    evidenceLocations: []
+  };
+  
   return [
     "You are the implementer resuming a bounded, supervised task after an",
     "administrative pause. Continue exactly the task snapshot below using",
     "only the current worktree state. You have no access to any prior",
     "session transcript.",
     "",
-    "IMPORTANT: When you finish, you MUST call the submit_result tool with",
-    "your outcome. Do not just write text. The run will fail if submit_result",
-    "is not called.",
+    "IMPORTANT: When you finish, you MUST call submit_result with all",
+    "required fields:",
+    JSON.stringify(resultExample, null, 2),
     "",
     "Task snapshot:",
     JSON.stringify(snapshot, null, 2),
@@ -937,15 +958,24 @@ function buildVerificationCorrectionPrompt(
   snapshot: TaskSnapshot,
   verification: VerificationEvidence,
 ): string {
+  const resultExample = {
+    outcome: "COMPLETED",
+    summary: "Fixed verification issues",
+    changedPaths: ["file1.py"],
+    commandsAttempted: ["uv run pytest"],
+    unresolvedProblems: [],
+    evidenceLocations: []
+  };
+  
   return [
     "You are the implementer continuing a bounded, supervised task.",
     "The previous verification run failed. Fix the issues using only the",
     "current worktree state and the verification evidence below. You have",
     "no access to any prior session transcript.",
     "",
-    "IMPORTANT: When you finish fixing the issues, you MUST call the",
-    "submit_result tool with your outcome. The run will fail if submit_result",
-    "is not called.",
+    "IMPORTANT: When you finish fixing the issues, you MUST call",
+    "submit_result with all required fields:",
+    JSON.stringify(resultExample, null, 2),
     "",
     "Task snapshot:",
     JSON.stringify(snapshot, null, 2),
@@ -959,15 +989,24 @@ function buildReviewCorrectionPrompt(
   snapshot: TaskSnapshot,
   review: Extract<ReviewerResult, { outcome: "CHANGES_REQUESTED" }>,
 ): string {
+  const resultExample = {
+    outcome: "COMPLETED",
+    summary: "Addressed reviewer feedback",
+    changedPaths: ["file1.py"],
+    commandsAttempted: ["uv run pytest"],
+    unresolvedProblems: [],
+    evidenceLocations: []
+  };
+  
   return [
     "You are the implementer continuing a bounded, supervised task.",
     "An independent reviewer requested changes. Address the findings below",
     "using only the current worktree state. You have no access to any prior",
     "session transcript.",
     "",
-    "IMPORTANT: When you finish addressing the review, you MUST call the",
-    "submit_result tool with your outcome. The run will fail if submit_result",
-    "is not called.",
+    "IMPORTANT: When you finish addressing the review, you MUST call",
+    "submit_result with all required fields:",
+    JSON.stringify(resultExample, null, 2),
     "",
     "Task snapshot:",
     JSON.stringify(snapshot, null, 2),

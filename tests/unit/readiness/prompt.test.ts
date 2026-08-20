@@ -77,4 +77,23 @@ describe("buildRefinerPrompt", () => {
   it("tells the refiner to preserve the source body hash", () => {
     expect(prompt()).toContain('"sourceBodyHash": "abc123"');
   });
+
+  it("includes operator clarifications when provided", () => {
+    const text = buildRefinerPrompt({
+      repository: { owner: "acme", repo: "widgets" },
+      issue,
+      config,
+      sourceBodyHash: "abc123",
+      clarifications: [
+        {
+          question: "What should happen when the session is expired?",
+          answer: "Redirect to login",
+        },
+      ],
+    });
+
+    expect(text).toContain("Operator clarifications collected during this prepare session");
+    expect(text).toContain("Q: What should happen when the session is expired?");
+    expect(text).toContain("A: Redirect to login");
+  });
 });

@@ -181,6 +181,21 @@ afterEach(() => {
 });
 
 describe("ReadinessService.check", () => {
+  it("defaults missing top-level dependencies to an empty array", async () => {
+    const result = {
+      outcome: "READY",
+      taskDraft: completeDraft(),
+      missingInformation: [],
+      ambiguities: [],
+    } as unknown as RefinerResult;
+    const { service } = makeService(result);
+
+    const report = await service.check(42);
+
+    expect(report.status).toBe("READY");
+    expect(report.dependencies).toEqual([]);
+  });
+
   it("classifies a complete issue as ready and promotes a snapshot", async () => {
     const { service, runner, github } = makeService(readyResult());
     const report = await service.check(42);
