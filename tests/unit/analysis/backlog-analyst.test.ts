@@ -341,6 +341,33 @@ describe("BacklogAnalyst.analyzeIssues", () => {
     expect(skipped?.classification).toBe("SKIPPED");
   });
 
+  it("deep mode preserves screen BLOCKED even when the gate reports READY", async () => {
+    // Issue #4 is screen-BLOCKED (open explicit dependency on #10). Under
+    // --deep the refiner runs and the fake gate would report READY, but the
+    // screen's BLOCKED must be authoritative so the issue never lands in
+    // `executable`.
+    const issues = new Map<number, GitHubIssue>([
+      [4, makeIssue(4, BLOCKED_BODY)], // BLOCKED (depends on #10, open)
+      [10, makeIssue(10, VAGUE_BODY, "open", "Dependency")], // dependency target, open
+    ]);
+    const { analyst, runner } = makeHarness(issues, "analyze-test-blocked-deep");
+
+    const report = await analyst.analyzeIssues({
+      epicRef: null,
+      requestedRefs: [4],
+      deep: true,
+    });
+
+    // Deep refines the analyzable issue, but it stays BLOCKED.
+    expect(runner.requests).toHaveLength(1);
+    expect(report.refinerSessions).toBe(1);
+    const row = report.issues.find((r) => r.issueNumber === 4);
+    expect(row?.screen.classification).toBe("BLOCKED");
+    expect(row?.classification).toBe("BLOCKED");
+    expect(report.executable).toEqual([]);
+    expect(report.needsWork).toEqual([4]);
+  });
+
   it("summary counts match the classified rows", async () => {
     const issues = new Map<number, GitHubIssue>([
       [1, makeIssue(1, CONTRACT_BODY)], // READY

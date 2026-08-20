@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GitHubIssue, GitHubPort } from "../../../src/github/github-adapter.js";
+import { GitHubError } from "../../../src/github/github-adapter.js";
 import {
   collectEpicIssueRefs,
   isEpicBody,
@@ -26,7 +27,12 @@ class FakeGitHub implements GitHubPort {
   async getIssue(number: number): Promise<GitHubIssue> {
     this.calls.push(number);
     const found = this.issues.find((i) => i.number === number);
-    if (!found) throw new Error(`issue #${number} not found`);
+    if (!found) {
+      // A genuinely-missing issue surfaces as a 404 GitHubError.
+      throw new GitHubError(`failed to fetch issue #${number}`, {
+        cause: { status: 404 },
+      });
+    }
     return found;
   }
   async updateIssueBody(): Promise<GitHubIssue> { throw new Error("must not be called"); }
@@ -68,5 +74,53 @@ describe("resolveIssueSet", () => {
     expect(set.missing).toEqual([999]);
     expect(set.unresolvedProseLines).toEqual([]);
     expect(github.calls).toEqual([101, 102, 999]);
+  });
+
+  it("records a 404 GitHubError as missing", async () => {
+    const github = new FakeGitHub([makeIssue(101)] as GitHubIssue[]);
+    const set = await resolveIssueSet([101, 999], 28, github, repo);
+    expect(set.issues.map((i) => i.number)).toEqual([101]);
+    expect(set.missing).toEqual([999]);
+  });
+
+  it("propagates a non-404 GitHubError as an infrastructure failure", async () => {
+    const github = {
+      async getIssue(number: number): Promise<GitHubIssue> {
+        if (number === 500) {
+          throw new GitHubError("rate limit exceeded", {
+            cause: { status: 403 },
+          });
+        }
+        throw new GitHubError(`failed to fetch issue #${number}`, {
+          cause: { status: 404 },
+        });
+      },
+      updateIssueBody: async () => { throw new Error("must not be called"); },
+      createIssueComment: async () => { throw new Error("must not be called"); },
+      findPullRequestByHead: async () => null,
+      createPullRequest: async () => { throw new Error("must not be called"); },
+      findIssueCommentByMarker: async () => null,
+    } satisfies GitHubPort;
+
+    await expect(
+      resolveIssueSet([1, 500], 28, github, repo),
+    ).rejects.toThrow("rate limit exceeded");
+  });
+
+  it("propagates a plain (non-GitHubError) throw", async () => {
+    const github = {
+      async getIssue(): Promise<GitHubIssue> {
+        throw new Error("network down");
+      },
+      updateIssueBody: async () => { throw new Error("must not be called"); },
+      createIssueComment: async () => { throw new Error("must not be called"); },
+      findPullRequestByHead: async () => null,
+      createPullRequest: async () => { throw new Error("must not be called"); },
+      findIssueCommentByMarker: async () => null,
+    } satisfies GitHubPort;
+
+    await expect(
+      resolveIssueSet([1], 28, github, repo),
+    ).rejects.toThrow("network down");
   });
 });

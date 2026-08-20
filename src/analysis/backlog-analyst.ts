@@ -184,10 +184,14 @@ export class BacklogAnalyst {
         refinerSessions += 1;
         const report = await this.deps.readiness.check(issue.number);
         readiness = { analysisId: report.analysisId, status: report.status };
-        classification = mapReadinessToClassification(
-          report.status,
-          screen.classification,
-        );
+        // The screen is authoritative for BLOCKED only: an open explicit
+        // dependency the screen detected must never be promoted to READY by
+        // the gate (the refiner draft is not guaranteed to reproduce the
+        // marker). READY/NEEDS_REFINEMENT still come from the gate.
+        classification =
+          screen.classification === "BLOCKED"
+            ? "BLOCKED"
+            : mapReadinessToClassification(report.status, screen.classification);
       } else {
         classification = mapScreenToClassification(screen.classification);
       }

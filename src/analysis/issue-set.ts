@@ -1,4 +1,5 @@
 import type { GitHubPort, GitHubIssue } from "../github/github-adapter.js";
+import { GitHubError } from "../github/github-adapter.js";
 import type { RepositoryRef } from "../domain/contracts.js";
 
 export interface ResolvedIssueSet {
@@ -99,9 +100,25 @@ export function collectEpicIssueRefs(body: string): {
 }
 
 /**
- * Fetch each requested issue via `github.getIssue`. A missing issue (the
- * port throws) is recorded in `missing` and skipped; one failure never aborts
- * the whole pass.
+ * True only for a genuine you-cannot-find-this-issue: a `GitHubError` whose
+ * underlying Octokit error carries a numeric `status === 404`. Any other
+ * failure — including `GitHubError`s with non-404 causes (rate-limit, auth,
+ * network) and non-`GitHubError` throws — is treated as an infrastructure
+ * failure and rethrown so the caller surfaces it (exit 1) rather than
+ * silently recording the issue as "missing".
+ */
+function isNotFound(error: unknown): boolean {
+  if (!(error instanceof GitHubError)) return false;
+  const cause = error.cause;
+  if (typeof cause !== "object" || cause === null) return false;
+  const status = (cause as { status?: unknown }).status;
+  return typeof status === "number" && status === 404;
+}
+
+/**
+ * Fetch each requested issue via `github.getIssue`. A genuinely missing issue
+ * (404) is recorded in `missing` and skipped; an infrastructure failure is
+ * rethrown so the command exits non-zero rather than masking the outage.
  */
 export async function resolveIssueSet(
   refs: number[],
@@ -115,7 +132,8 @@ export async function resolveIssueSet(
   for (const ref of refs) {
     try {
       issues.push(await github.getIssue(ref));
-    } catch {
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
       missing.push(ref);
     }
   }
