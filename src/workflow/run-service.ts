@@ -389,6 +389,7 @@ class RunAttempt {
   private transition(to: RunStage, evidenceRef: string | null): void {
     this.deps.runStore.transition(this.runId, this.stage, to, evidenceRef);
     this.stage = to;
+    this.deps.onProgress?.(`→ phase: ${to}`);
   }
 
   private summary(

@@ -7,6 +7,8 @@ import { GitHubAdapter } from "../github/github-adapter.js";
 import type { RepositoryContext } from "../github/repository-context.js";
 import { resolveRepositoryContext } from "../github/repository-context.js";
 import { resolveIssueRef, resolveRefinerModel, resolveRefinerTimeout } from "./args.js";
+import { createReporter } from "../ui/reporter.js";
+import type { Reporter } from "../ui/reporter.js";
 import { ArtifactStore } from "../persistence/artifact-store.js";
 import { PiRunner } from "../pi/pi-runner.js";
 import { appPaths } from "../platform/paths.js";
@@ -41,6 +43,8 @@ export interface CheckCommandDeps {
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
   setExitCode?: (code: number) => void;
+  /** Override terminal detection (tests simulate a pegged TTY). */
+  isTTY?: boolean;
 }
 
 interface CheckOptions {
@@ -76,13 +80,19 @@ export function registerCheckCommand(
         process.exitCode = code;
       });
       try {
-        const report = await runCheck(issueRef, opts, deps);
-        if (opts.json === true) {
-          stdout(JSON.stringify(report, null, 2));
-        } else {
-          printHumanReport(report, stdout);
+        const reporter =
+          opts.json === true ? null : createReporter(stdout, deps.isTTY);
+        try {
+          const report = await runCheck(issueRef, opts, deps, reporter);
+          if (opts.json === true) {
+            stdout(JSON.stringify(report, null, 2));
+          } else {
+            printHumanReport(report, stdout);
+          }
+          setExitCode(report.status === "READY" ? 0 : 2);
+        } finally {
+          reporter?.close();
         }
-        setExitCode(report.status === "READY" ? 0 : 2);
       } catch (error) {
         stderr(
           `autopilot check: ${error instanceof Error ? error.message : String(error)}`,
@@ -96,6 +106,7 @@ async function runCheck(
   issueRef: string,
   opts: CheckOptions,
   deps: CheckCommandDeps,
+  reporter: Reporter | null,
 ): Promise<ReadinessReport> {
   const runner = deps.processRunner ?? new ProcessRunnerImpl();
   const ctx = await resolveRepositoryContext(deps.cwd ?? process.cwd(), runner);
@@ -131,7 +142,15 @@ async function runCheck(
           refinerTimeoutMs,
         });
 
-  return readiness.check(number);
+  const ref = `${ctx.repository.owner}/${ctx.repository.repo}#${number}`;
+  const timeoutMinutes = refinerTimeoutMs / 60_000;
+  reporter?.line(`→ refining issue ${ref} (refiner timeout ${timeoutMinutes}m)`);
+  reporter?.setSpinner(`refining issue ${ref}`);
+  try {
+    return await readiness.check(number);
+  } finally {
+    reporter?.stopSpinner({ commit: `readiness assessment complete for ${ref}` });
+  }
 }
 
 function printHumanReport(

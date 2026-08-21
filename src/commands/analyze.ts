@@ -18,6 +18,8 @@ import type { ProcessRunner } from "../platform/process-runner.js";
 import { ProcessRunner as ProcessRunnerImpl } from "../platform/process-runner.js";
 import type { ReadinessService } from "../readiness/readiness-service.js";
 import { ReadinessService as ReadinessServiceImpl } from "../readiness/readiness-service.js";
+import { createReporter } from "../ui/reporter.js";
+import type { Reporter } from "../ui/reporter.js";
 import {
   resolveIssueRefs,
   resolveRefinerModel,
@@ -64,6 +66,8 @@ export interface AnalyzeCommandDeps {
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
   setExitCode?: (code: number) => void;
+  /** Override terminal detection (tests simulate a pegged TTY). */
+  isTTY?: boolean;
 }
 
 interface AnalyzeOptions {
@@ -107,13 +111,19 @@ export function registerAnalyzeCommand(
         });
         try {
           const minReady = parseMinReady(opts.minReady);
-          const report = await runAnalyze(ref, moreRefs, opts, deps);
-          if (opts.json === true) {
-            stdout(JSON.stringify(report, null, 2));
-          } else {
-            printHumanReport(report, stdout);
+          const reporter =
+            opts.json === true ? null : createReporter(stdout, deps.isTTY);
+          try {
+            const report = await runAnalyze(ref, moreRefs, opts, deps, reporter);
+            if (opts.json === true) {
+              stdout(JSON.stringify(report, null, 2));
+            } else {
+              printHumanReport(report, stdout);
+            }
+            setExitCode(exitCodeFor(report, minReady));
+          } finally {
+            reporter?.close();
           }
-          setExitCode(exitCodeFor(report, minReady));
         } catch (error) {
           stderr(
             `autopilot analyze: ${error instanceof Error ? error.message : String(error)}`,
@@ -174,6 +184,7 @@ async function runAnalyze(
   moreRefs: string[],
   opts: AnalyzeOptions,
   deps: AnalyzeCommandDeps,
+  reporter: Reporter | null,
 ): Promise<BacklogReport> {
   const runner = deps.processRunner ?? new ProcessRunnerImpl();
   const ctx = await resolveRepositoryContext(deps.cwd ?? process.cwd(), runner);
@@ -255,12 +266,24 @@ async function runAnalyze(
     }
   }
 
-  const report = await analyst.analyzeIssues({
-    epicRef,
-    requestedRefs,
-    deep: opts.deep === true,
-  });
-  return report;
+  const targetLabel =
+    epicRef !== null
+      ? `epic ${epicRef}`
+      : `${requestedRefs.length} issue${requestedRefs.length === 1 ? "" : "s"}`;
+  const repoRef = `${ctx.repository.owner}/${ctx.repository.repo}`;
+  reporter?.line(`→ analyzing ${targetLabel} for readiness (${repoRef})`);
+  reporter?.setSpinner(`analyzing ${targetLabel}`);
+  try {
+    const report = await analyst.analyzeIssues({
+      epicRef,
+      requestedRefs,
+      deep: opts.deep === true,
+    });
+    reporter?.stopSpinner({ commit: `analysis complete (${report.executable.length} executable)` });
+    return report;
+  } finally {
+    reporter?.stopSpinner();
+  }
 }
 
 function printHumanReport(

@@ -18,6 +18,8 @@ import {
   upsertRefinementSection,
 } from "../readiness/refinement-section.js";
 import type { CheckCommandDeps } from "./check.js";
+import { createReporter } from "../ui/reporter.js";
+import type { Reporter } from "../ui/reporter.js";
 import { resolveIssueRef, resolveRefinerModel, resolveRefinerTimeout } from "./args.js";
 
 export interface PrepareCommandDeps extends CheckCommandDeps {
@@ -87,13 +89,19 @@ export function registerPrepareCommand(
         process.exitCode = code;
       });
       try {
-        const outcome = await runPrepare(issueRef, opts, deps, stdout);
-        if (opts.json === true) {
-          stdout(JSON.stringify(outcome, null, 2));
-        } else {
-          printHumanOutcome(outcome, stdout);
+        const reporter =
+          opts.json === true ? null : createReporter(stdout, deps.isTTY);
+        try {
+          const outcome = await runPrepare(issueRef, opts, deps, stdout, reporter);
+          if (opts.json === true) {
+            stdout(JSON.stringify(outcome, null, 2));
+          } else {
+            printHumanOutcome(outcome, stdout);
+          }
+          setExitCode(0);
+        } finally {
+          reporter?.close();
         }
-        setExitCode(0);
       } catch (error) {
         stderr(
           `autopilot prepare: ${error instanceof Error ? error.message : String(error)}`,
@@ -108,6 +116,7 @@ async function runPrepare(
   opts: PrepareOptions,
   deps: PrepareCommandDeps,
   stdout: (text: string) => void,
+  reporter: Reporter | null,
 ): Promise<PrepareOutcome> {
   const runner = deps.processRunner ?? new ProcessRunnerImpl();
   const ctx = await resolveRepositoryContext(deps.cwd ?? process.cwd(), runner);
@@ -146,6 +155,14 @@ async function runPrepare(
   // Initial fetch: the base for the diff and the concurrent-edit guard.
   const issue = await github.getIssue(number);
 
+  const ref = `${ctx.repository.owner}/${ctx.repository.repo}#${number}`;
+  reporter?.line(`→ preparing execution contract for ${ref}`);
+  reporter?.setSpinner(`refining ${ref}`);
+  const refine = (clarifications: Array<{ question: string; answer: string }>) => {
+    reporter?.setSpinner(`refining ${ref} (${String(clarifications.length)} clarification${clarifications.length === 1 ? "" : "s"})`);
+    return readiness.check(number, clarifications);
+  };
+
   // Fast path: reuse a prior READY check snapshot when it still matches the
   // current issue version. Otherwise fall back to a fresh refiner analysis.
   const reused = await findReusableReport(
@@ -155,7 +172,7 @@ async function runPrepare(
     opts.fromCheck,
   );
   const source: PrepareOutcome["source"] = reused === null ? "fresh" : "reused";
-  let report: ReadinessReport = reused ?? (await readiness.check(number));
+  let report: ReadinessReport = reused ?? (await refine([]));
 
   if (opts.json !== true) {
     const askAnswer = deps.answer ?? defaultAnswer;
@@ -167,6 +184,9 @@ async function runPrepare(
       let answer = "";
       let emptyAnswers = 0;
       while (answer.trim().length === 0) {
+        // Suspend the live spinner before asking for stdin so it cannot erase
+        // the readline prompt.
+        reporter?.stopSpinner();
         answer = await askAnswer(prompt);
         if (answer.trim().toLowerCase() === "cancel") {
           return {
@@ -190,9 +210,11 @@ async function runPrepare(
       if (answers.length > 10) {
         throw new Error("maximum number of clarification questions exceeded");
       }
-      report = await readiness.check(number, answers);
+      report = await refine(answers);
     }
   }
+
+  reporter?.stopSpinner({ commit: `refinement complete for ${ref}` });
 
   const proposedBody = upsertRefinementSection(issue.body, report.draft);
   const diff = renderUnifiedDiff(issue.body, proposedBody);

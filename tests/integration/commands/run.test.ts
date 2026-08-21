@@ -403,6 +403,25 @@ describe("autopilot run", () => {
     expect(harness.stdoutLines.join("\n")).toContain("Stage: PR_OPEN");
   });
 
+  it("emits running-status progress lines without ANSI when piped", async () => {
+    const { root } = await createFixtureRepo("run-cmd-progress-status");
+    const harness = makeHarness("run-cmd-progress-status", root);
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-cmd-progress-status")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+
+    await harness.run(["run", "42"]);
+
+    const output = harness.stdoutLines.join("\n");
+    expect(harness.exitCodes).toEqual([0]);
+    expect(output).toContain("→ running issue acme/run-cmd-progress-status#42");
+    expect(output).toContain("run completed (PR_OPEN)");
+    // Phase transitions surface as committed lines while piping.
+    expect(output).toContain("→ phase: IMPLEMENTATION");
+    expect(output).toContain("→ phase: INDEPENDENT_REVIEW");
+    expect(output).not.toContain("\u001b[");
+  });
+
   it("exits 2 for NEEDS_REFINEMENT", async () => {
     const { root } = await createFixtureRepo("run-cmd-needs-refinement");
     const harness = makeHarness("run-cmd-needs-refinement", root);

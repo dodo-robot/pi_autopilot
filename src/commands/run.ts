@@ -11,11 +11,15 @@ import { resolveRepositoryContext } from "../github/repository-context.js";
 import type { RunOverrides, RunSummary } from "../workflow/run-service.js";
 import { RunService } from "../workflow/run-service.js";
 import type { RunServiceDeps } from "../workflow/run-service.js";
+import { createReporter } from "../ui/reporter.js";
+import type { Reporter } from "../ui/reporter.js";
 
 export interface RunCommandDeps extends RunServiceDeps {
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
   setExitCode?: (code: number) => void;
+  /** Override terminal detection (tests simulate a pegged TTY). */
+  isTTY?: boolean;
 }
 
 interface RunOptions {
@@ -58,8 +62,11 @@ export function registerRunCommand(program: Command, deps: RunCommandDeps = {}):
       const setExitCode = deps.setExitCode ?? ((code: number) => {
         process.exitCode = code;
       });
+      // Interactive progress is silent in --json mode so stdout stays pure JSON.
+      const reporter =
+        opts.json === true ? null : createReporter(stdout, deps.isTTY);
       try {
-        const summary = await runIssue(issueRef, opts, deps, stdout);
+        const summary = await runIssue(issueRef, opts, deps, reporter);
         if (opts.json === true) {
           stdout(JSON.stringify(summary, null, 2));
         } else {
@@ -69,6 +76,8 @@ export function registerRunCommand(program: Command, deps: RunCommandDeps = {}):
       } catch (error) {
         stderr(`autopilot run: ${error instanceof Error ? error.message : String(error)}`);
         setExitCode(1);
+      } finally {
+        reporter?.close();
       }
     });
 }
@@ -83,7 +92,7 @@ async function runIssue(
   issueRef: string,
   opts: RunOptions,
   deps: RunCommandDeps,
-  stdout: (text: string) => void,
+  reporter: Reporter | null,
 ): Promise<RunSummary> {
   const runner = deps.processRunner ?? new ProcessRunnerImpl();
   const ctx =
@@ -93,11 +102,18 @@ async function runIssue(
   const { number } = resolveIssueRef(issueRef, ctx);
 
   const overrides = resolveOverrides(opts);
-  const service = new RunService({ ...deps, onProgress: stdout });
+  const service = new RunService({
+    ...deps,
+    ...(reporter === null ? {} : { onProgress: (text: string) => reporter.line(text) }),
+  });
+  const ref = `${ctx.repository.owner}/${ctx.repository.repo}#${number}`;
+  reporter?.line(`→ running issue ${ref}`);
+  reporter?.setSpinner(`orchestrating pipeline for ${ref}`);
   const summary = await service.start(number, overrides);
+  reporter?.stopSpinner({ commit: `run completed (${summary.stage})` });
 
-  if (opts.json !== true) {
-    printTransitions(deps, summary.runId, stdout);
+  if (opts.json !== true && reporter !== null) {
+    printTransitions(deps, summary.runId, (text) => reporter.line(text));
   }
   return summary;
 }

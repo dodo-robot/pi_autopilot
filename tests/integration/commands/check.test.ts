@@ -210,6 +210,26 @@ describe("autopilot check", () => {
     expect(harness.github.mutationCalls).toEqual([]);
   });
 
+  it("emits non-ANSI human progress lines (piped output stays clean)", async () => {
+    const root = await createFixtureRepo();
+    const refiner: RefinerResult = {
+      outcome: "READY",
+      taskDraft: completeDraft(),
+      missingInformation: [],
+      dependencies: [],
+      ambiguities: [],
+    };
+    const harness = makeHarness(root, refiner);
+
+    await harness.run(["check", "42"]);
+
+    const output = harness.stdoutLines.join("\n");
+    expect(output).toContain("→ refining issue acme/widgets#42 (refiner timeout 5m)");
+    expect(output).toContain("readiness assessment complete for acme/widgets#42");
+    // Piped (non-TTY) output must never contain ANSI repaint sequences.
+    expect(output).not.toContain("\u001b[");
+  });
+
   it("reports NEEDS_REFINEMENT with exit code 2 when the deterministic gate fails", async () => {
     const root = await createFixtureRepo();
     const draft = completeDraft();
