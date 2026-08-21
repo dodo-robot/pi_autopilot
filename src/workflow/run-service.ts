@@ -37,6 +37,7 @@ import type { VerificationEvidence } from "../verification/verification-runner.j
 import { VerificationRunner } from "../verification/verification-runner.js";
 import { BudgetTracker } from "./budgets.js";
 import type { BudgetCounters } from "./budgets.js";
+import { nextStage } from "./state-machine.js";
 import { WorkspaceManager } from "../workspace/workspace-manager.js";
 import type { Workspace } from "../workspace/workspace-manager.js";
 
@@ -205,14 +206,18 @@ export class RunService {
   }
 
   /**
-   * Administrative resume: continue a `BLOCKED` run with a fresh,
-   * transcript-free correction session in its preserved workspace. Only
-   * a run currently in `BLOCKED` may be resumed — this is the sole
-   * quiescent stage with a legal `RESUME` exit (see `state-machine.ts`);
-   * any other stage (including every terminal stage) is rejected before
-   * anything else runs. The frozen task snapshot and existing worktree
-   * are reused exactly as they were left; readiness and workspace
-   * creation are never re-entered.
+   * Administrative resume: continue a `BLOCKED` or `FAILED` run with a
+   * fresh, transcript-free session in its preserved workspace. For a
+   * `BLOCKED` run this resumes at IMPLEMENTATION with a correction
+   * session. For a `FAILED` run it resumes at the stage recorded in
+   * `resumeAt` (the stage it was in when it failed) — skipping any
+   * already-completed stage. Only a run currently in `BLOCKED` or
+   * `FAILED` may be resumed — these are the only quiescent stages with a
+   * legal `RESUME` exit (see `state-machine.ts`); any other stage
+   * (including every terminal stage) is rejected before anything else
+   * runs. The frozen task snapshot and existing worktree are reused
+   * exactly as they were left; readiness and workspace creation are never
+   * re-entered.
    */
   async resume(runId: string, overrides: RunOverrides = {}): Promise<RunSummary> {
     const runner = this.deps.processRunner ?? new ProcessRunnerImpl();
@@ -264,11 +269,23 @@ export class RunService {
       if (run === null) {
         throw new RunServiceError(`no run found with id ${runId}`);
       }
-      if (run.stage !== "BLOCKED") {
+      if (run.stage !== "BLOCKED" && run.stage !== "FAILED") {
         throw new RunServiceError(
-          `cannot resume run ${runId}: stage is ${run.stage}, not BLOCKED`,
+          `cannot resume run ${runId}: stage is ${run.stage}, not BLOCKED or FAILED`,
         );
       }
+      const resumeTo = (run.stage === "FAILED"
+        ? (run.resumeAt ?? "IMPLEMENTATION")
+        : "IMPLEMENTATION") as Extract<
+        RunStage,
+        "IMPLEMENTATION" | "CORRECTION" | "VERIFICATION" | "INDEPENDENT_REVIEW"
+      >;
+      // Validate the RESUME target from the run's current stage. Throws on
+      // an illegal target (e.g. resumeAt drifted to a stage with no RESUME
+      // exit from FAILED); Task 2 widened the RESUME resumeTo set to include
+      // VERIFICATION and INDEPENDENT_REVIEW, so resuming from FAILED into
+      // those stages compiles and is legal.
+      nextStage({ type: "RESUME", resumeTo }, { stage: run.stage, correctionCycles: 0 });
       if (run.taskSnapshotRef === null) {
         throw new RunServiceError(
           `cannot resume run ${runId}: no task snapshot was ever recorded`,
@@ -322,7 +339,7 @@ export class RunService {
         initialAttemptSequence,
       });
 
-      return await attempt.executeResume(snapshot, workspace);
+      return await attempt.executeResume(snapshot, workspace, resumeTo);
     } finally {
       runStore.close();
     }
@@ -410,17 +427,26 @@ class RunAttempt {
   }
 
   /**
-   * Administrative resume: launch one fresh correction attempt in the
-   * preserved workspace for a run that was `BLOCKED`. Never re-enters
-   * readiness or workspace creation — the frozen task snapshot and the
-   * existing worktree are reused exactly as they were left. Wraps the
-   * same fail-closed error handling as `execute()`.
+   * Administrative resume: continue a run that was `BLOCKED` or `FAILED`
+   * in its preserved workspace. `resumeTo` selects the stage to resume
+   * at:
+   *  - `IMPLEMENTATION`: the classic BLOCKED correction path — launch one
+   *    fresh correction session with the resume prompt.
+   *  - `VERIFICATION` / `INDEPENDENT_REVIEW` (a FAILED run's resumeAt):
+   *    the implementation already exists in the preserved worktree, so it
+   *    is verified (not re-implemented) and then the failed role is
+   *    retried — verification failure falls into the bounded correction
+   *    loop, a failed verification blocks/loops, an approved review
+   *    publishes, and CHANGES_REQUESTED enters the correction loop.
+   * Never re-enters readiness or workspace creation. Wraps the same
+   * fail-closed error handling as `execute()`.
    */
   async executeResume(
     snapshot: TaskSnapshot,
     workspace: Workspace,
+    resumeTo: RunStage = "IMPLEMENTATION",
   ): Promise<RunSummary> {
-    return await this.runFailClosed(() => {
+    return await this.runFailClosed(async () => {
       const workspaceManager = new WorkspaceManager({
         processRunner: this.deps.processRunner,
         repository: this.deps.repository,
@@ -432,14 +458,76 @@ class RunAttempt {
         workspaceManager,
       });
 
-      this.transition("IMPLEMENTATION", null);
+      if (resumeTo === "IMPLEMENTATION") {
+        this.transition("IMPLEMENTATION", null);
+        return this.runImplementationLoop(
+          snapshot,
+          workspace,
+          workspaceManager,
+          verificationRunner,
+          buildResumeCorrectionPrompt(snapshot),
+        );
+      }
 
-      return this.runImplementationLoop(
+      // resumeTo is VERIFICATION or INDEPENDENT_REVIEW: the implementation
+      // is already present in the preserved worktree. Verify it, then
+      // continue with the role that had been interrupted.
+      this.transition("VERIFICATION", null);
+      const verification = await this.runVerification(workspace, verificationRunner);
+      if (!verification.passed) {
+        const blocked = await this.handleVerificationFailure(verification);
+        if (blocked !== null) return blocked;
+        // Correction: continue via the implementation loop with the
+        // verification-correction prompt. (handleVerificationFailure already
+        // transitioned back through IMPLEMENTATION on CONTINUE.)
+        return await this.runImplementationLoop(
+          snapshot,
+          workspace,
+          workspaceManager,
+          verificationRunner,
+          buildVerificationCorrectionPrompt(snapshot, verification),
+        );
+      }
+
+      // No fresh implementer session runs on this path, so there is no
+      // persisted COMPLETED implementer result to hand publication (only
+      // non-COMPLETED outcomes are persisted, as implementer-result-N.json).
+      // Synthesize the implementer result from the frozen snapshot: the
+      // objective is the only authoritative summary of the already-present
+      // implementation.
+      const synthesizedImplementer: ImplementerResult = {
+        outcome: "COMPLETED",
+        summary: snapshot.objective,
+        // Only `outcome` and `summary` are consumed by publishRun, but the
+        // COMPLETED variant of ImplementerResultSchema requires the rest.
+        changedPaths: [],
+        commandsAttempted: [],
+        unresolvedProblems: [],
+        evidenceLocations: [],
+      };
+
+      const reviewOutcome = await this.runReview(snapshot, workspace, verification);
+      if (reviewOutcome.kind === "terminal") return reviewOutcome.summary;
+      if (reviewOutcome.kind === "approved") {
+        return await this.publishRun(
+          snapshot,
+          workspace,
+          workspaceManager,
+          verification,
+          reviewOutcome.review,
+          synthesizedImplementer,
+        );
+      }
+      // CHANGES_REQUESTED: bounded correction loop. runReview already
+      // transitioned CORRECTION; re-enter IMPLEMENTATION and loop with the
+      // review-correction prompt.
+      this.transition("IMPLEMENTATION", null);
+      return await this.runImplementationLoop(
         snapshot,
         workspace,
         workspaceManager,
         verificationRunner,
-        buildResumeCorrectionPrompt(snapshot),
+        buildReviewCorrectionPrompt(snapshot, reviewOutcome.review),
       );
     });
   }

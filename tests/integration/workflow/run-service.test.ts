@@ -818,4 +818,70 @@ describe("RunService.resume", () => {
     await expect(service.resume("no-such-run")).rejects.toThrow(RunServiceError);
     await expect(service.resume("no-such-run")).rejects.toThrow(/no run found/);
   });
+
+  it("resumes a FAILED run at INDEPENDENT_REVIEW by re-verifying and launching a reviewer without a new implementer attempt", async () => {
+    const harness = await makeHarness("run-fixture-resume-failed-review");
+    harness.pi.script("refiner", [
+      taskSnapshotRefiner("run-fixture-resume-failed-review"),
+    ]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    // The reviewer session dies abnormally (PiRunError) after the run reached
+    // INDEPENDENT_REVIEW; runFailClosed persists FAILED with resumeAt set to
+    // the current stage (INDEPENDENT_REVIEW). Nothing is recorded for the
+    // reviewer attempt (launchReviewer throws before recordAttempt).
+    const service = new RunService(harness.deps);
+    const throwingPi: RunPiRunner = {
+      run: async (request) => {
+        if (request.role === "reviewer") {
+          throw new PiRunError("reviewer session exited with code 2", "reviewer", {
+            stdout: "",
+            stderr: "",
+            resultPath: path.join(request.diagnosticsDir, "result.json"),
+          });
+        }
+        return harness.pi.run(request);
+      },
+    };
+    const failingDeps: RunServiceDeps = { ...harness.deps, createPi: () => throwingPi };
+    const failingService = new RunService(failingDeps);
+    const failed = await failingService.start(42);
+
+    expect(failed.stage).toBe("FAILED");
+    const runStore = harness.openRunStore();
+    expect(runStore.getRun(failed.runId)!.resumeAt).toBe("INDEPENDENT_REVIEW");
+    // Original run reached INDEPENDENT_REVIEW and recorded one implementer
+    // attempt (no implementer result artifact for COMPLETED outcomes).
+    expect(runStore.listAttempts(failed.runId).map((a) => a.role)).toEqual([
+      "implementer",
+    ]);
+    runStore.close();
+
+    // Resume at the preserved INDEPENDENT_REVIEW stage: re-run verification
+    // on the existing work (still passing), then launch a fresh reviewer
+    // that approves. No new implementer session may be started.
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    const resumedService = new RunService(harness.deps);
+    const resumed = await resumedService.resume(failed.runId);
+
+    expect(resumed.stage).toBe("PR_OPEN");
+    const runStore2 = harness.openRunStore();
+    const attempts = runStore2.listAttempts(failed.runId).map((a) => a.role);
+    // No second implementer attempt; exactly one reviewer attempt recorded.
+    expect(attempts).toEqual(["implementer", "reviewer"]);
+    expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(1);
+    expect(harness.pi.requests.filter((r) => r.role === "reviewer")).toHaveLength(1);
+    expect(runStore2.transitions(failed.runId).map((t) => t.to)).toEqual([
+      "READINESS_CHECK",
+      "WORKSPACE_CREATION",
+      "IMPLEMENTATION",
+      "VERIFICATION",
+      "INDEPENDENT_REVIEW",
+      "FAILED",
+      "VERIFICATION",
+      "INDEPENDENT_REVIEW",
+      "PUBLICATION",
+      "PR_OPEN",
+    ]);
+    runStore2.close();
+  });
 });

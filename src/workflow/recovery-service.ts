@@ -149,9 +149,9 @@ export class RecoveryService {
    */
   async resume(runId: string, overrides: RunOverrides = {}): Promise<RunSummary> {
     const run = this.requireRun(runId);
-    if (run.stage !== "BLOCKED") {
+    if (run.stage !== "BLOCKED" && run.stage !== "FAILED") {
       throw new RecoveryError(
-        `cannot resume run ${runId}: stage is ${run.stage}, not BLOCKED`,
+        `cannot resume run ${runId}: stage is ${run.stage}, not BLOCKED or FAILED`,
       );
     }
     if (this.deps.runService === undefined) {
