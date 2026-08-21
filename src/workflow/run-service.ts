@@ -1119,7 +1119,16 @@ export function buildReviewerPrompt(
     criteriaResults: [
       { criterionId: "ac1", passed: true, notes: "verified in the worktree" },
     ],
-    findings: [],
+    findings: [
+      {
+        severity: "important",
+        criterionId: "ac1",
+        path: "src/example.py",
+        line: 42,
+        evidence: "the function returns None instead of an empty list",
+        requestedChange: "return [] instead of None on line 42",
+      },
+    ],
   };
 
   return [
@@ -1135,11 +1144,20 @@ export function buildReviewerPrompt(
     "ALL fields are required. For an APPROVED outcome you MUST include",
     "criteriaResults with one entry per task acceptance criterion (criterionId",
     "must match a snapshot acceptanceCriteria id; passed is a boolean; notes is",
-    "a string) plus a findings array. Use outcome CHANGES_REQUESTED (same",
-    "fields plus findings describing each requested change) if the work does",
+    "a string) plus a findings array (may be empty). Use outcome CHANGES_REQUESTED",
+    "(same fields plus findings describing each requested change) if the work does",
     "not satisfy a criterion, PRODUCT_AMBIGUITY if the task is ambiguous, or",
-    "FAILED if you cannot complete the review. Do not just write the outcome",
-    "in text; the run will fail if submit_result is not called.",
+    "FAILED if you cannot complete the review.",
+    "",
+    "Each finding in the findings array MUST have ALL of these fields:",
+    "  severity: one of \"critical\" | \"important\" | \"minor\" (no other values)",
+    "  criterionId: the id of the acceptance criterion this relates to (e.g. \"ac1\")",
+    "  path: the file path where the issue is (string, e.g. \"src/foo.py\")",
+    "  line: the line number (integer >= 0)",
+    "  evidence: a short description of what the code actually does (string)",
+    "  requestedChange: a concrete fix instruction (non-empty string)",
+    "",
+    "Do not write the outcome in text; the run will fail if submit_result is not called.",
     "",
     JSON.stringify(snapshot, null, 2),
     JSON.stringify(verification, null, 2),
