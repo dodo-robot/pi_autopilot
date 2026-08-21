@@ -6,6 +6,10 @@ export interface AppPaths {
   readonly dataDir: string;
   readonly dbPath: string;
   readonly runsDir: string;
+  readonly daemonDir: string;
+  readonly pidPath: string;
+  readonly queuePath: string;
+  readonly logPath: string;
   /** Absolute directory for a run's artifacts. */
   runDir(runId: string): string;
   /** Absolute path for one artifact inside a run's directory. */
@@ -40,10 +44,15 @@ export function defaultDataDir(): string {
 export function appPaths(dataDir: string = defaultDataDir()): AppPaths {
   const dbPath = path.join(dataDir, "autopilot.db");
   const runsDir = path.join(dataDir, "runs");
+  const daemonDir = path.join(dataDir, "daemon");
   return {
     dataDir,
     dbPath,
     runsDir,
+    daemonDir,
+    pidPath: path.join(daemonDir, "pid"),
+    queuePath: path.join(daemonDir, "queue.json"),
+    logPath: path.join(daemonDir, "daemon.log"),
     runDir(runId: string): string {
       assertSafeRunId(runId);
       return path.join(runsDir, runId);
