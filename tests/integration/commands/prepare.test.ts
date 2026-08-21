@@ -873,4 +873,66 @@ describe("prepare — brainstorm phase", () => {
 
     expect(brainstormCalled).toBe(false);
   });
+
+  it("returns cancelled status when operator types cancel during brainstorm Q&A", async () => {
+    const github = new FakeGitHub(issue);
+    const brainstormResult: BrainstormerResult = {
+      questions: [{ id: "q1", text: "What is the real goal?" }],
+    };
+    let pass2RefinerCalled = false;
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ap-prepare-bs-cancel-"));
+    tempDirs.push(dataDir);
+    let refinerIndex = 0;
+    const refinerResults = [needsRefinementResult(), readyResult()];
+    const stdoutLines: string[] = [];
+    const exitCodes: number[] = [];
+
+    const deps: PrepareCommandDeps = {
+      cwd: root,
+      dataDir,
+      createGitHub: async () => github,
+      createReadiness: (d) =>
+        new ReadinessService({
+          repository: d.repository,
+          config: d.config,
+          github: d.github,
+          pi: {
+            run: async (request) => {
+              const current =
+                refinerResults[refinerIndex] ??
+                refinerResults[refinerResults.length - 1]!;
+              refinerIndex += 1;
+              if (refinerIndex === 2) pass2RefinerCalled = true;
+              return {
+                result: current,
+                exitCode: 0,
+                durationMs: 1,
+                stdout: "",
+                stderr: "",
+                resultPath: path.join(request.diagnosticsDir, "result.json"),
+                sessionDir: request.sessionDir,
+              };
+            },
+          },
+          artifacts: new ArtifactStore(appPaths(dataDir)),
+          paths: appPaths(dataDir),
+          refinerModel: d.refinerModel,
+          refinerTimeoutMs: d.refinerTimeoutMs,
+          analysisId: () => "bs-cancel-42",
+          now: () => "2026-08-18T00:00:00.000Z",
+          brainstorm: async () => brainstormResult,
+        }),
+      confirm: async () => true,
+      answer: async () => "cancel",
+      stdout: (text) => stdoutLines.push(text),
+      stderr: () => undefined,
+      setExitCode: (code) => exitCodes.push(code),
+    };
+
+    await buildProgram(deps).parseAsync(["node", "autopilot", "prepare", "42"]);
+
+    expect(exitCodes).toEqual([0]);
+    expect(stdoutLines.join("\n")).toContain("Cancelled");
+    expect(pass2RefinerCalled).toBe(false);
+  });
 });
