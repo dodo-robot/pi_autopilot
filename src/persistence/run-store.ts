@@ -408,6 +408,52 @@ export class RunStore {
     return row === undefined ? null : mapRunRow(row);
   }
 
+  /**
+   * The most recently updated run for an issue, regardless of its stage
+   * (terminal runs included). `--fresh` uses this to locate the run record
+   * (and its worktree) to drop for a clean restart.
+   */
+  getMostRecentRunForIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+  ): RunRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM runs
+         WHERE owner = ? AND repo = ? AND issue_number = ?
+         ORDER BY updated_at DESC, rowid DESC
+         LIMIT 1`,
+      )
+      .get(owner, repo, issueNumber) as RunRow | undefined;
+    return row === undefined ? null : mapRunRow(row);
+  }
+
+  /**
+   * Delete a run and every row that references it (review findings,
+   * verification runs, attempts, transitions, publications) in one
+   * transaction. Intended for the explicit `--fresh` discard path.
+   */
+  dropRun(runId: string): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`DELETE FROM review_findings WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM verification_runs WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM attempts WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM transitions WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM publications WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM runs WHERE id = ?`).run(runId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // rollback itself failed; propagate the original error
+      }
+      throw error;
+    }
+  }
+
   listNonterminalRuns(): RunRecord[] {
     const rows = this.db
       .prepare(

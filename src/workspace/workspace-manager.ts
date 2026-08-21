@@ -308,4 +308,36 @@ export class WorkspaceManager {
     this.claimedPaths.delete(workspace.path);
     this.claimedBranches.delete(workspace.branch);
   }
+
+  /**
+   * Remove a workspace's worktree and branch unconditionally, plus prune it
+   * from the claimed path/branch registries. Unlike {@link removeSuccessful},
+   * this never refuses based on run outcome or `retainBlockedWorktree`:
+   * `--fresh` is the explicit-discard caller that deliberately throws away a
+   * prior (e.g. FAILED) run's workspace before starting clean. Tolerates a
+   * worktree or branch that no longer exists.
+   */
+  async discard(workspace: Workspace): Promise<void> {
+    if (existsSync(workspace.path)) {
+      await runGit(
+        this.processRunner,
+        ["worktree", "remove", "--force", workspace.path],
+        this.repository.root,
+      );
+    }
+    const existing = await runGit(
+      this.processRunner,
+      ["branch", "--list", workspace.branch],
+      this.repository.root,
+    );
+    if (existing.length > 0) {
+      await runGit(
+        this.processRunner,
+        ["branch", "-D", workspace.branch],
+        this.repository.root,
+      );
+    }
+    this.claimedPaths.delete(workspace.path);
+    this.claimedBranches.delete(workspace.branch);
+  }
 }

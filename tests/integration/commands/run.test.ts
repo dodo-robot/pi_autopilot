@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,7 +19,11 @@ import type {
 import type { RepositoryContext } from "../../../src/github/repository-context.js";
 import { safeProcessEnv } from "../../../src/github/repository-context.js";
 import type { PiExecution, PiRunRequest } from "../../../src/pi/pi-runner.js";
+import { appPaths } from "../../../src/platform/paths.js";
 import { ProcessRunner } from "../../../src/platform/process-runner.js";
+import { ArtifactStore } from "../../../src/persistence/artifact-store.js";
+import { RunStore } from "../../../src/persistence/run-store.js";
+import { WorkspaceManager } from "../../../src/workspace/workspace-manager.js";
 import type { RunPiRunner } from "../../../src/workflow/run-service.js";
 
 const MINIMAL_YAML = `version: 1
@@ -233,6 +237,7 @@ async function createFixtureRepo(
 function makeHarness(
   repoName: string,
   root: string,
+  dataDirOverride?: string,
 ): {
   exitCodes: number[];
   stdoutLines: string[];
@@ -244,7 +249,8 @@ function makeHarness(
   const exitCodes: number[] = [];
   const stdoutLines: string[] = [];
   const stderrLines: string[] = [];
-  const dataDir = mkdtempSync(path.join(tmpdir(), "ap-run-cmd-data-"));
+  const dataDir =
+    dataDirOverride ?? mkdtempSync(path.join(tmpdir(), "ap-run-cmd-data-"));
   tempDirs.push(dataDir);
   const github = new FakeGitHub({ ...ISSUE });
   const pi = new ScriptedPiRunner();
@@ -457,5 +463,93 @@ describe("autopilot run", () => {
 
     expect(harness.exitCodes).toEqual([1]);
     expect(harness.stderrLines.join("\n")).toContain("autopilot run:");
+  });
+
+  it("--fresh drops a prior run and its worktree, then starts clean", async () => {
+    const { root } = await createFixtureRepo("run-cmd-fresh");
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ap-run-cmd-fresh-data-"));
+    tempDirs.push(dataDir);
+    const harness = makeHarness("run-cmd-fresh", root, dataDir);
+    const runner = new ProcessRunner();
+    const repositoryContext: RepositoryContext = {
+      root,
+      repository: { owner: "acme", repo: "run-cmd-fresh" },
+      originUrl: `git@github.com:acme/run-cmd-fresh.git`,
+      currentBranch: "main",
+      isClean: true,
+    };
+    // Mirror the fixture's default workspace policy.
+    const policy = {
+      baseBranch: "main",
+      branchPrefix: "autopilot/",
+      requireCleanCheckout: true,
+      retainBlockedWorktree: true,
+    };
+    const paths = appPaths(dataDir);
+
+    // Seed a prior FAILED run: DB record (with snapshot) + worktree/branch.
+    const priorId = "run-cmd-prior-failed";
+    const store = new RunStore(paths.dbPath);
+    store.createRun({
+      id: priorId,
+      repository: { owner: "acme", repo: "run-cmd-fresh" },
+      issueNumber: 42,
+    });
+    const artifacts = new ArtifactStore(paths);
+    const snapshot = {
+      schemaVersion: 1,
+      repository: { owner: "acme", repo: "run-cmd-fresh" },
+      issue: { number: 42, nodeId: "I_42", updatedAt: "2026-08-18T00:00:00Z" },
+      objective: "Implement token refresh validation",
+      context: "The auth module owns session refresh.",
+      expectedBehavior: [],
+      acceptanceCriteria: [],
+      constraints: [],
+      nonGoals: [],
+      validation: [],
+      dependencies: [],
+      canonicalReferences: [],
+      sourceBodyHash: "stale-hash",
+    };
+    await artifacts.writeJson(priorId, "task-snapshot.json", snapshot);
+    store.setTaskSnapshotRef(priorId, "task-snapshot.json");
+    store.transition(priorId, "PREFLIGHT", "FAILED", null);
+    store.close();
+
+    const wm = new WorkspaceManager({
+      processRunner: runner,
+      repository: repositoryContext,
+      policy,
+    });
+    await wm.create({
+      runId: priorId,
+      issueNumber: 42,
+      title: "Implement token refresh validation",
+      baseBranch: "main",
+    });
+    const priorWorktree = path.join(
+      path.dirname(root),
+      ".pi-autopilot-worktrees",
+      "run-cmd-fresh",
+      priorId,
+    );
+    expect(existsSync(priorWorktree)).toBe(true);
+
+    // The fresh run must complete so we can observe a distinct new run.
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-cmd-fresh")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+
+    await harness.run(["run", "42", "--fresh"]);
+
+    expect(harness.exitCodes).toEqual([0]);
+    // The orphaned worktree from the dropped run is gone.
+    expect(existsSync(priorWorktree)).toBe(false);
+    expect(harness.stdoutLines.join("\n")).toContain("Stage: PR_OPEN");
+    // A clean run started under a distinct run id.
+    const store2 = new RunStore(paths.dbPath);
+    expect(store2.getRun(priorId)).toBeNull();
+    expect(store2.getRun("run-cmd-test-1")?.stage).toBe("PR_OPEN");
+    store2.close();
   });
 });
