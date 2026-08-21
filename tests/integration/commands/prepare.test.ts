@@ -1,10 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AutopilotConfig } from "../../../src/config/schema.js";
 import type { ResolvedRoleModel } from "../../../src/config/load-config.js";
-import type { RefinerResult, TaskDraft } from "../../../src/domain/contracts.js";
+import type { BrainstormerResult, RefinerResult, TaskDraft } from "../../../src/domain/contracts.js";
 import type { GitHubIssue, GitHubPort } from "../../../src/github/github-adapter.js";
 import { safeProcessEnv } from "../../../src/github/repository-context.js";
 import type { RepositoryContext } from "../../../src/github/repository-context.js";
@@ -12,7 +12,7 @@ import { ArtifactStore } from "../../../src/persistence/artifact-store.js";
 import type { PiExecution, PiRunRequest } from "../../../src/pi/pi-runner.js";
 import { ProcessRunner } from "../../../src/platform/process-runner.js";
 import { appPaths } from "../../../src/platform/paths.js";
-import { ReadinessService } from "../../../src/readiness/readiness-service.js";
+import { ReadinessService, sha256 } from "../../../src/readiness/readiness-service.js";
 import type { RefinerRunner } from "../../../src/readiness/readiness-service.js";
 import { REFINEMENT_START } from "../../../src/readiness/refinement-section.js";
 import { buildProgram } from "../../../src/cli.js";
@@ -232,6 +232,7 @@ function makeHarness(
     },
     confirm,
     answer,
+    runBrainstormer: async () => [],
     stdout: (text) => stdoutLines.push(text),
     stderr: (text) => stderrLines.push(text),
     setExitCode: (code) => exitCodes.push(code),
@@ -553,5 +554,323 @@ describe("autopilot prepare", () => {
     expect(harness.exitCodes).toEqual([1]);
     expect(harness.stderrLines.join("\n")).toContain("thinking");
     expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
+  });
+});
+
+function needsRefinementResult(): RefinerResult {
+  return {
+    outcome: "NEEDS_REFINEMENT",
+    taskDraft: {
+      ...completeDraft(),
+      sourceBodyHash: sha256(ISSUE_BODY),
+    },
+    missingInformation: ["What is the expected UX for expired sessions?"],
+    dependencies: [],
+    ambiguities: [],
+    suggestions: ["Describe the UX for expired sessions"],
+  };
+}
+
+function productAmbiguityResult(): RefinerResult {
+  return {
+    outcome: "PRODUCT_AMBIGUITY",
+    taskDraft: {
+      ...completeDraft(),
+      sourceBodyHash: sha256(ISSUE_BODY),
+    },
+    missingInformation: [],
+    dependencies: [],
+    ambiguities: [{ type: "PRODUCT", description: "Return 401 or 403?" }],
+  };
+}
+
+function readyResult(): RefinerResult {
+  const draft = completeDraft();
+  return {
+    outcome: "READY",
+    taskDraft: { ...draft, sourceBodyHash: sha256(ISSUE_BODY) },
+    missingInformation: [],
+    dependencies: [],
+    ambiguities: [],
+  };
+}
+
+function makeBrainstormHarness(
+  root: string,
+  refinerResults: RefinerResult[],
+  github: FakeGitHub,
+  confirm: (prompt: string) => Promise<boolean>,
+  brainstormResult: BrainstormerResult,
+  answer?: (prompt: string) => Promise<string>,
+) {
+  const exitCodes: number[] = [];
+  const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
+  const dataDir = mkdtempSync(path.join(tmpdir(), "ap-prepare-bs-"));
+  tempDirs.push(dataDir);
+  let refinerIndex = 0;
+
+  const deps: PrepareCommandDeps = {
+    cwd: root,
+    dataDir,
+    createGitHub: async () => github,
+    createReadiness: (d) =>
+      new ReadinessService({
+        repository: d.repository,
+        config: d.config,
+        github: d.github,
+        pi: {
+          run: async (request) => {
+            const current =
+              refinerResults[refinerIndex] ??
+              refinerResults[refinerResults.length - 1]!;
+            refinerIndex += 1;
+            return {
+              result: current,
+              exitCode: 0,
+              durationMs: 1,
+              stdout: "",
+              stderr: "",
+              resultPath: path.join(request.diagnosticsDir, "result.json"),
+              sessionDir: request.sessionDir,
+            };
+          },
+        },
+        artifacts: new ArtifactStore(appPaths(dataDir)),
+        paths: appPaths(dataDir),
+        refinerModel: d.refinerModel,
+        refinerTimeoutMs: d.refinerTimeoutMs,
+        analysisId: () => "prepare-bs-test-42",
+        now: () => "2026-08-18T00:00:00.000Z",
+        brainstorm: async () => brainstormResult,
+      }),
+    confirm,
+    answer,
+    stdout: (text) => stdoutLines.push(text),
+    stderr: (text) => stderrLines.push(text),
+    setExitCode: (code) => exitCodes.push(code),
+  };
+
+  const run = (args: string[]) =>
+    buildProgram(deps).parseAsync(["node", "autopilot", ...args]);
+
+  return { exitCodes, stdoutLines, stderrLines, run };
+}
+
+describe("prepare — brainstorm phase", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await createFixtureRepo();
+  });
+
+  it("triggers the brainstorm phase when refiner pass-1 returns NEEDS_REFINEMENT", async () => {
+    const github = new FakeGitHub(issue);
+    const brainstormResult: BrainstormerResult = {
+      questions: [
+        { id: "q1", text: "What is the real goal?" },
+        { id: "q2", text: "What does done look like to you?" },
+      ],
+    };
+    const answersGiven: string[] = [];
+    const { exitCodes, run } = makeBrainstormHarness(
+      root,
+      [needsRefinementResult(), readyResult()],
+      github,
+      async () => true,
+      brainstormResult,
+      async (prompt) => {
+        answersGiven.push(prompt);
+        return "Some answer";
+      },
+    );
+
+    await run(["prepare", "42"]);
+
+    expect(exitCodes).toEqual([0]);
+    expect(answersGiven.some((p) => p.includes("What is the real goal?"))).toBe(true);
+    expect(answersGiven.some((p) => p.includes("What does done look like to you?"))).toBe(true);
+  });
+
+  it("triggers the brainstorm phase when refiner pass-1 returns PRODUCT_AMBIGUITY", async () => {
+    const github = new FakeGitHub(issue);
+    const brainstormResult: BrainstormerResult = {
+      questions: [{ id: "q1", text: "Which status code is correct?" }],
+    };
+    const answersGiven: string[] = [];
+    const { exitCodes, run } = makeBrainstormHarness(
+      root,
+      [productAmbiguityResult(), readyResult()],
+      github,
+      async () => true,
+      brainstormResult,
+      async (prompt) => {
+        answersGiven.push(prompt);
+        return "Use 401";
+      },
+    );
+
+    await run(["prepare", "42"]);
+
+    expect(exitCodes).toEqual([0]);
+    expect(answersGiven.some((p) => p.includes("Which status code is correct?"))).toBe(true);
+  });
+
+  it("feeds brainstorm answers to the refiner as clarifications (pass 2)", async () => {
+    const github = new FakeGitHub(issue);
+    const brainstormResult: BrainstormerResult = {
+      questions: [{ id: "q1", text: "What is the real goal?" }],
+    };
+    let pass2PromptSeen = "";
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ap-prepare-bs-pass2-"));
+    tempDirs.push(dataDir);
+    let refinerIndex = 0;
+    const refinerResults = [needsRefinementResult(), readyResult()];
+    const refinerRequests: PiRunRequest[] = [];
+
+    const deps: PrepareCommandDeps = {
+      cwd: root,
+      dataDir,
+      createGitHub: async () => github,
+      createReadiness: (d) =>
+        new ReadinessService({
+          repository: d.repository,
+          config: d.config,
+          github: d.github,
+          pi: {
+            run: async (request) => {
+              refinerRequests.push(request);
+              const current =
+                refinerResults[refinerIndex] ??
+                refinerResults[refinerResults.length - 1]!;
+              refinerIndex += 1;
+              if (refinerIndex === 2) pass2PromptSeen = request.prompt;
+              return {
+                result: current,
+                exitCode: 0,
+                durationMs: 1,
+                stdout: "",
+                stderr: "",
+                resultPath: path.join(request.diagnosticsDir, "result.json"),
+                sessionDir: request.sessionDir,
+              };
+            },
+          },
+          artifacts: new ArtifactStore(appPaths(dataDir)),
+          paths: appPaths(dataDir),
+          refinerModel: d.refinerModel,
+          refinerTimeoutMs: d.refinerTimeoutMs,
+          analysisId: () => `bs-pass2-${String(refinerIndex)}`,
+          now: () => "2026-08-18T00:00:00.000Z",
+          brainstorm: async () => brainstormResult,
+        }),
+      confirm: async () => true,
+      answer: async () => "The real goal is to prevent replay attacks",
+      stdout: () => undefined,
+      stderr: () => undefined,
+      setExitCode: () => undefined,
+    };
+
+    await buildProgram(deps).parseAsync(["node", "autopilot", "prepare", "42"]);
+
+    expect(pass2PromptSeen).toContain("The real goal is to prevent replay attacks");
+    expect(pass2PromptSeen).toContain("What is the real goal?");
+  });
+
+  it("skips the brainstorm phase when refiner pass-1 returns READY", async () => {
+    const github = new FakeGitHub(issue);
+    let brainstormCalled = false;
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ap-prepare-bs-skip-"));
+    tempDirs.push(dataDir);
+
+    const deps: PrepareCommandDeps = {
+      cwd: root,
+      dataDir,
+      createGitHub: async () => github,
+      createReadiness: (d) =>
+        new ReadinessService({
+          repository: d.repository,
+          config: d.config,
+          github: d.github,
+          pi: {
+            run: async (request) => ({
+              result: readyResult(),
+              exitCode: 0,
+              durationMs: 1,
+              stdout: "",
+              stderr: "",
+              resultPath: path.join(request.diagnosticsDir, "result.json"),
+              sessionDir: request.sessionDir,
+            }),
+          },
+          artifacts: new ArtifactStore(appPaths(dataDir)),
+          paths: appPaths(dataDir),
+          refinerModel: d.refinerModel,
+          refinerTimeoutMs: d.refinerTimeoutMs,
+          analysisId: () => "bs-skip-42",
+          now: () => "2026-08-18T00:00:00.000Z",
+          brainstorm: async () => {
+            brainstormCalled = true;
+            return { questions: [{ id: "q1", text: "Skipped?" }] };
+          },
+        }),
+      confirm: async () => true,
+      answer: async () => "",
+      stdout: () => undefined,
+      stderr: () => undefined,
+      setExitCode: () => undefined,
+    };
+
+    await buildProgram(deps).parseAsync(["node", "autopilot", "prepare", "42"]);
+
+    expect(brainstormCalled).toBe(false);
+  });
+
+  it("skips the brainstorm phase in --json mode", async () => {
+    const github = new FakeGitHub(issue);
+    let brainstormCalled = false;
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ap-prepare-bs-json-"));
+    tempDirs.push(dataDir);
+
+    const deps: PrepareCommandDeps = {
+      cwd: root,
+      dataDir,
+      createGitHub: async () => github,
+      createReadiness: (d) =>
+        new ReadinessService({
+          repository: d.repository,
+          config: d.config,
+          github: d.github,
+          pi: {
+            run: async (request) => ({
+              result: needsRefinementResult(),
+              exitCode: 0,
+              durationMs: 1,
+              stdout: "",
+              stderr: "",
+              resultPath: path.join(request.diagnosticsDir, "result.json"),
+              sessionDir: request.sessionDir,
+            }),
+          },
+          artifacts: new ArtifactStore(appPaths(dataDir)),
+          paths: appPaths(dataDir),
+          refinerModel: d.refinerModel,
+          refinerTimeoutMs: d.refinerTimeoutMs,
+          analysisId: () => "bs-json-42",
+          now: () => "2026-08-18T00:00:00.000Z",
+          brainstorm: async () => {
+            brainstormCalled = true;
+            return { questions: [{ id: "q1", text: "Should not appear?" }] };
+          },
+        }),
+      confirm: async () => true,
+      stdout: () => undefined,
+      stderr: () => undefined,
+      setExitCode: () => undefined,
+    };
+
+    await buildProgram(deps).parseAsync(["node", "autopilot", "prepare", "--json", "42"]);
+
+    expect(brainstormCalled).toBe(false);
   });
 });

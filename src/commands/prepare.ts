@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { loadRepositoryConfig } from "../config/load-config.js";
 import type { AutopilotConfig } from "../config/schema.js";
+import type { BrainstormerResult } from "../domain/contracts.js";
 import type { GitHubIssue, GitHubPort } from "../github/github-adapter.js";
 import { GitHubAdapter } from "../github/github-adapter.js";
 import type { RepositoryContext } from "../github/repository-context.js";
@@ -33,6 +34,13 @@ export interface PrepareCommandDeps extends CheckCommandDeps {
    * Defaults to an interactive readline prompt; tests inject a stub.
    */
   answer?: (prompt: string) => Promise<string>;
+  /**
+   * Test seam: bypass the brainstormer Pi session.
+   */
+  runBrainstormer?: (
+    issue: GitHubIssue,
+    report: ReadinessReport,
+  ) => Promise<Array<{ id: string; text: string }>>;
 }
 
 interface PrepareOptions {
@@ -173,6 +181,56 @@ async function runPrepare(
   );
   const source: PrepareOutcome["source"] = reused === null ? "fresh" : "reused";
   let report: ReadinessReport = reused ?? (await refine([]));
+
+  // Brainstorm phase: trigger on NEEDS_REFINEMENT or PRODUCT_AMBIGUITY (pass 1 only).
+  if (
+    opts.json !== true &&
+    report.status !== "READY" &&
+    (report.outcome === "NEEDS_REFINEMENT" || report.outcome === "PRODUCT_AMBIGUITY")
+  ) {
+    const brainstormFn = async (
+      _issue: GitHubIssue,
+      _report: ReadinessReport,
+    ): Promise<Array<{ id: string; text: string }>> => {
+      if (deps.runBrainstormer !== undefined) {
+        return deps.runBrainstormer(_issue, _report);
+      }
+      const svc = readiness as ReadinessService;
+      const result = await svc.brainstorm(number, _report);
+      return result.questions;
+    };
+
+    reporter?.setSpinner(`brainstorming ${ref}`);
+    const questions = await brainstormFn(issue, report);
+    reporter?.stopSpinner({
+      commit: `brainstorm complete (${String(questions.length)} question${questions.length === 1 ? "" : "s"})`,
+    });
+
+    if (questions.length > 0) {
+      const askAnswer = deps.answer ?? defaultAnswer;
+      const brainstormAnswers: Array<{ question: string; answer: string }> = [];
+      for (const q of questions) {
+        reporter?.stopSpinner();
+        const answer = await askAnswer(`${q.text}\n\nAnswer (or 'cancel'): `);
+        if (answer.trim().toLowerCase() === "cancel") {
+          return {
+            repository: report.repository,
+            issueNumber: number,
+            applied: false,
+            reason: "cancelled",
+            updatedAt: issue.updatedAt,
+            source,
+            ...(reused !== null ? { reusedFrom: reused.analysisId } : {}),
+          };
+        }
+        brainstormAnswers.push({ question: q.text, answer: answer.trim() });
+      }
+
+      reporter?.setSpinner(`refining ${ref} (brainstorm pass)`);
+      report = await refine(brainstormAnswers);
+      reporter?.stopSpinner({ commit: `refinement complete for ${ref} (pass 2)` });
+    }
+  }
 
   if (opts.json !== true) {
     const askAnswer = deps.answer ?? defaultAnswer;
