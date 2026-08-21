@@ -1025,6 +1025,12 @@ function buildReviewerPrompt(
     "You have not seen any implementer transcript or reasoning. Evaluate",
     "only the current worktree diff against the task snapshot and the",
     "deterministic verification evidence below.",
+    "",
+    "IMPORTANT: When you finish your review, you MUST call the submit_result",
+    "tool with your outcome (APPROVED or CHANGES_REQUESTED). Do not just write",
+    "'APPROVED' or 'CHANGES_REQUESTED' in text. The run will fail if",
+    "submit_result is not called.",
+    "",
     JSON.stringify(snapshot, null, 2),
     JSON.stringify(verification, null, 2),
   ].join("\n\n");
