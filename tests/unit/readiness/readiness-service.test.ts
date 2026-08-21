@@ -7,6 +7,7 @@ import type { ResolvedRoleModel } from "../../../src/config/load-config.js";
 import type {
   RefinerResult,
   TaskDraft,
+  BrainstormerResult,
 } from "../../../src/domain/contracts.js";
 import type { GitHubIssue, GitHubPort } from "../../../src/github/github-adapter.js";
 import type { RepositoryContext } from "../../../src/github/repository-context.js";
@@ -18,6 +19,7 @@ import {
   ReadinessService,
   sha256,
 } from "../../../src/readiness/readiness-service.js";
+import type { ReadinessReport } from "../../../src/readiness/readiness-service.js";
 import type { RefinerRunner } from "../../../src/readiness/readiness-service.js";
 
 const repository: RepositoryContext = {
@@ -438,5 +440,146 @@ describe("computeReadinessGaps", () => {
     expect(computeReadinessGaps(refiner, draft)).toContainEqual(
       expect.objectContaining({ code: "NO_OBJECTIVE" }),
     );
+  });
+});
+
+describe("ReadinessService.brainstorm", () => {
+  let tempDir: string;
+
+  afterEach(() => {
+    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function makeBrainstormerService(
+    brainstormResult: BrainstormerResult,
+    piRequests: PiRunRequest[] = [],
+  ): ReadinessService {
+    tempDir = mkdtempSync(path.join(tmpdir(), "ap-brainstorm-"));
+    const fakePi: RefinerRunner = {
+      run: async (request) => {
+        piRequests.push(request);
+        return {
+          result: brainstormResult,
+          exitCode: 0,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+          resultPath: path.join(request.diagnosticsDir, "result.json"),
+          sessionDir: request.sessionDir,
+        };
+      },
+    };
+    return new ReadinessService({
+      repository,
+      config,
+      github: {
+        getIssue: async () => issue,
+        updateIssueBody: async () => issue,
+        createIssueComment: async () => undefined,
+        findPullRequestByHead: async () => null,
+        createPullRequest: async () => { throw new Error("unexpected"); },
+        findIssueCommentByMarker: async () => null,
+      },
+      pi: fakePi,
+      artifacts: new ArtifactStore(appPaths(tempDir)),
+      paths: appPaths(tempDir),
+      refinerModel,
+      analysisId: () => "brainstorm-test-42",
+      now: () => "2026-08-18T00:00:00.000Z",
+    });
+  }
+
+  function makeReport(
+    outcome: "NEEDS_REFINEMENT" | "PRODUCT_AMBIGUITY",
+  ): ReadinessReport {
+    return {
+      status: "NEEDS_REFINEMENT",
+      outcome,
+      repository: { owner: "acme", repo: "widgets" },
+      issueNumber: 42,
+      sourceBodyHash: "abc123",
+      gaps: [],
+      missingInformation: ["What is the expected UX for expired sessions?"],
+      suggestions: ["Describe the UX for expired sessions"],
+      ambiguities: [],
+      dependencies: [],
+      draft: {
+        schemaVersion: 1,
+        repository: { owner: "acme", repo: "widgets" },
+        issue: { number: 42, nodeId: "I_42", updatedAt: "2026-08-18T00:00:00Z" },
+        objective: "",
+        context: "",
+        expectedBehavior: [],
+        acceptanceCriteria: [],
+        constraints: [],
+        nonGoals: [],
+        validation: [],
+        dependencies: [],
+        canonicalReferences: [],
+        sourceBodyHash: "abc123",
+      },
+      snapshot: null,
+      refinerModel,
+      analysisId: "brainstorm-test-42",
+      createdAt: "2026-08-18T00:00:00.000Z",
+    };
+  }
+
+  it("returns questions from the brainstormer Pi session", async () => {
+    const brainstormResult: BrainstormerResult = {
+      questions: [
+        { id: "q1", text: "What is the real goal?" },
+        { id: "q2", text: "What does done look like?" },
+      ],
+    };
+    const service = makeBrainstormerService(brainstormResult);
+    const report = makeReport("NEEDS_REFINEMENT");
+
+    const result = await service.brainstorm(42, report);
+
+    expect(result.questions).toHaveLength(2);
+    expect(result.questions[0]).toEqual({ id: "q1", text: "What is the real goal?" });
+  });
+
+  it("passes role 'brainstormer' to the Pi runner", async () => {
+    const piRequests: PiRunRequest[] = [];
+    const service = makeBrainstormerService(
+      { questions: [{ id: "q1", text: "What is the goal?" }] },
+      piRequests,
+    );
+    const report = makeReport("NEEDS_REFINEMENT");
+
+    await service.brainstorm(42, report);
+
+    expect(piRequests[0]?.role).toBe("brainstormer");
+  });
+
+  it("uses the injected brainstorm seam when provided in deps", async () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), "ap-brainstorm-seam-"));
+    const seamResult: BrainstormerResult = {
+      questions: [{ id: "q1", text: "Seam question?" }],
+    };
+    const service = new ReadinessService({
+      repository,
+      config,
+      github: {
+        getIssue: async () => issue,
+        updateIssueBody: async () => issue,
+        createIssueComment: async () => undefined,
+        findPullRequestByHead: async () => null,
+        createPullRequest: async () => { throw new Error("unexpected"); },
+        findIssueCommentByMarker: async () => null,
+      },
+      pi: { run: async () => { throw new Error("pi.run must not be called"); } },
+      artifacts: new ArtifactStore(appPaths(tempDir)),
+      paths: appPaths(tempDir),
+      refinerModel,
+      brainstorm: async () => seamResult,
+    });
+
+    const report = makeReport("PRODUCT_AMBIGUITY");
+    const result = await service.brainstorm(42, report);
+
+    expect(result.questions[0]?.text).toBe("Seam question?");
   });
 });

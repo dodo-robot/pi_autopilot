@@ -4,6 +4,7 @@ import type { ResolvedRoleModel } from "../config/load-config.js";
 import type { AutopilotConfig } from "../config/schema.js";
 import type {
   Ambiguity,
+  BrainstormerResult,
   RefinerResult,
   RepositoryRef,
   TaskDependency,
@@ -18,6 +19,7 @@ import type { PiExecution, PiRunRequest } from "../pi/pi-runner.js";
 import type { ArtifactStore } from "../persistence/artifact-store.js";
 import type { AppPaths } from "../platform/paths.js";
 import { buildRefinerPrompt } from "./prompt.js";
+import { buildBrainstormerPrompt } from "./brainstormer-prompt.js";
 
 export const GAP_CODES = [
   "NO_OBJECTIVE",
@@ -81,6 +83,8 @@ export interface ReadinessServiceDeps {
   analysisId?: (issueNumber: number) => string;
   /** Clock for report.createdAt; injectable for deterministic tests. */
   now?: () => string;
+  /** Test seam: bypass the Pi session entirely. */
+  brainstorm?: (issueNumber: number, report: ReadinessReport) => Promise<BrainstormerResult>;
 }
 
 const DEFAULT_REFINER_TIMEOUT_MS = 5 * 60_000;
@@ -325,5 +329,54 @@ export class ReadinessService {
       });
     }
     return report;
+  }
+
+  /**
+   * Runs a bounded brainstormer session to surface operator-facing intent
+   * questions for an underspecified issue. Returns the validated question list.
+   * Persists the result as a diagnostic artifact.
+   */
+  async brainstorm(
+    issueNumber: number,
+    report: ReadinessReport,
+  ): Promise<BrainstormerResult> {
+    if (this.deps.brainstorm !== undefined) {
+      return this.deps.brainstorm(issueNumber, report);
+    }
+
+    const issue = await this.deps.github.getIssue(issueNumber);
+    const analysisId = this.analysisId(issueNumber);
+    const analysisDir = this.deps.paths.runDir(analysisId);
+
+    const prompt = buildBrainstormerPrompt({
+      repository: this.deps.repository.repository,
+      issue,
+      refinerGaps: {
+        missingInformation: report.missingInformation,
+        ambiguities: report.ambiguities,
+        suggestions: report.suggestions,
+      },
+    });
+
+    const execution = await this.deps.pi.run({
+      role: "brainstormer",
+      model: this.deps.refinerModel,
+      prompt,
+      worktree: this.deps.repository.root,
+      allowedCommands: [],
+      protectedPaths: this.deps.config.agentPolicy.protectedPaths,
+      sessionDir: path.join(analysisDir, "brainstormer-session"),
+      diagnosticsDir: path.join(analysisDir, "brainstormer-diagnostics"),
+      env: safeProcessEnv(),
+      timeoutMs: this.refinerTimeoutMs,
+    });
+
+    const result = execution.result as BrainstormerResult;
+    await this.deps.artifacts.writeJson(
+      analysisId,
+      "brainstormer-result.json",
+      result,
+    );
+    return result;
   }
 }
