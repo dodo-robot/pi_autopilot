@@ -884,4 +884,83 @@ describe("RunService.resume", () => {
     ]);
     runStore2.close();
   });
+
+  it("resumes a FAILED run at VERIFICATION by re-verifying and, on verification failure, recording a second implementer attempt (the correction path) rather than launching a reviewer", async () => {
+    const harness = await makeHarness("run-fixture-resume-failed-verification");
+    harness.pi.script("refiner", [
+      taskSnapshotRefiner("run-fixture-resume-failed-verification"),
+    ]);
+    // The first implementer completes but leaves no `.verify-ok` marker, so
+    // the resumed verification (re-run against the preserved worktree) fails
+    // deterministically once the process runner no longer throws.
+    harness.pi.script("implementer", [
+      { result: implementerCompleted(), passVerification: false },
+    ]);
+
+    // On the FIRST run the verify command’s process runner throws (a
+    // transient verification-infrastructure error). runFailClosed persists
+    // FAILED from the current stage, which is VERIFICATION, so resumeAt is
+    // recorded as VERIFICATION; the non-PiRunError propagates and start()
+    // rejects.
+    const brokenVerificationRunner: ProcessRunner = {
+      run: async (request) => {
+        if (request.args.includes(".verify-ok")) {
+          throw new WorkspaceError("verify infrastructure unavailable");
+        }
+        return harness.deps.processRunner!.run(request);
+      },
+    };
+    const failingDeps: RunServiceDeps = {
+      ...harness.deps,
+      processRunner: brokenVerificationRunner,
+    };
+    const failingService = new RunService(failingDeps);
+
+    await expect(failingService.start(42)).rejects.toThrow();
+
+    const runStore = harness.openRunStore();
+    const failed = runStore.getMostRecentRunForIssue("acme", "run-fixture-resume-failed-verification", 42)!;
+    expect(failed.stage).toBe("FAILED");
+    expect(failed.resumeAt).toBe("VERIFICATION");
+    // One implementer attempt was recorded on the original run.
+    expect(runStore.listAttempts(failed.id).map((a) => a.role)).toEqual(["implementer"]);
+    runStore.close();
+
+    // Resume at the preserved VERIFICATION stage with the real process
+    // runner: the `-f .verify-ok` check now exits nonzero (no marker), so
+    // verification fails and the verification-correction path launches a
+    // SECOND implementer session — never a reviewer.
+    harness.pi.script("implementer", [
+      implementerBlocked("verification not resolved"),
+    ]);
+    const resumedService = new RunService(harness.deps);
+    const resumed = await resumedService.resume(failed.id);
+
+    expect(resumed.stage).toBe("BLOCKED");
+    expect(resumed.reason).toBe("verification not resolved");
+
+    const runStore2 = harness.openRunStore();
+    const attempts = runStore2.listAttempts(failed.id);
+    // Exactly two implementer attempts (the second from the verification-
+    // correction path) and no reviewer attempt ever recorded.
+    expect(attempts.map((a) => a.role)).toEqual(["implementer", "implementer"]);
+    expect(attempts.map((a) => a.attemptNumber)).toEqual([1, 2]);
+    expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(2);
+    expect(harness.pi.requests.filter((r) => r.role === "reviewer")).toEqual([]);
+    // The second implementer session is the verification-correction session,
+    // not a fresh base implementer run.
+    const implementerRequests = harness.pi.requests.filter((r) => r.role === "implementer");
+    expect(implementerRequests[1]!.prompt).toContain("previous verification run failed");
+    expect(runStore2.transitions(failed.id).map((t) => t.to)).toEqual([
+      "READINESS_CHECK",
+      "WORKSPACE_CREATION",
+      "IMPLEMENTATION",
+      "VERIFICATION",
+      "FAILED",
+      "VERIFICATION",
+      "IMPLEMENTATION",
+      "BLOCKED",
+    ]);
+    runStore2.close();
+  });
 });

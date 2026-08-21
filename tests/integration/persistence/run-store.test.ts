@@ -134,6 +134,23 @@ describe("RunStore", () => {
     expect(reloaded.resumeAt).toBe("INDEPENDENT_REVIEW");
   });
 
+  it("leaves resume_at null when a run is created without a resumeAt", () => {
+    const run = store.createRun({ repository: repo, issueNumber: 2 });
+    store.close();
+    store = new RunStore(dbPath);
+    const reloaded = store.getRun(run.id)!;
+    expect(reloaded.resumeAt).toBeNull();
+  });
+
+  it("leaves resume_at null across a non-FAILED transition without opts", () => {
+    const run = store.createRun({ repository: repo, issueNumber: 3 });
+    store.transition(run.id, "PREFLIGHT", "READINESS_CHECK", null);
+    store.close();
+    store = new RunStore(dbPath);
+    const reloaded = store.getRun(run.id)!;
+    expect(reloaded.resumeAt).toBeNull();
+  });
+
   it("records the frozen task snapshot reference", () => {
     const run = store.createRun({ repository: repo, issueNumber: 42 });
     const updated = store.setTaskSnapshotRef(

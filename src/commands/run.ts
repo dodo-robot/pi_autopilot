@@ -177,8 +177,15 @@ async function discardExistingRun(
       title,
       baseBranch: config.workspace.baseBranch,
     });
-    await workspaceManager.discard(workspace);
-    runStore.dropRun(run.id);
+    // Guarantee the run record is dropped even if discarding the worktree
+    // throws (e.g. a git worktree remove fails). Otherwise the record would
+    // be orphaned with no worktree to locate, and a repeat `--fresh` could
+    // get stuck trying to discard a workspace that no longer exists.
+    try {
+      await workspaceManager.discard(workspace);
+    } finally {
+      runStore.dropRun(run.id);
+    }
   } finally {
     runStore.close();
   }

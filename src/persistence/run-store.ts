@@ -418,6 +418,11 @@ export class RunStore {
     repo: string,
     issueNumber: number,
   ): RunRecord | null {
+    // ORDER BY updated_at DESC breaks ties with rowid DESC. SQLite's rowid
+    // ascends with insertion order, so when two runs for an issue share the
+    // same updated_at the later-inserted one is preferred. SQLite-specific;
+    // on other databases with a separate autoincrement column the second
+    // key would instead reference that column.
     const row = this.db
       .prepare(
         `SELECT * FROM runs
