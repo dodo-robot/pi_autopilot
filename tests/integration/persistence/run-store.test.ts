@@ -124,6 +124,16 @@ describe("RunStore", () => {
     ).toThrow(/UNIQUE constraint failed/);
   });
 
+  it("persists resume_at for a FAILED transition", () => {
+    const run = store.createRun({ repository: repo, issueNumber: 1 });
+    store.transition(run.id, "PREFLIGHT", "INDEPENDENT_REVIEW", null);
+    store.transition(run.id, "INDEPENDENT_REVIEW", "FAILED", null, {
+      resumeAt: "INDEPENDENT_REVIEW",
+    });
+    const reloaded = store.getRun(run.id)!;
+    expect(reloaded.resumeAt).toBe("INDEPENDENT_REVIEW");
+  });
+
   it("records the frozen task snapshot reference", () => {
     const run = store.createRun({ repository: repo, issueNumber: 42 });
     const updated = store.setTaskSnapshotRef(

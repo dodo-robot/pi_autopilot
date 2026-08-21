@@ -463,7 +463,11 @@ class RunAttempt {
     try {
       return await body();
     } catch (error) {
-      this.transition("FAILED", null);
+      this.deps.runStore.transition(this.runId, this.stage, "FAILED", null, {
+        resumeAt: this.stage,
+      });
+      this.stage = "FAILED";
+      this.deps.onProgress?.(`→ phase: FAILED`);
       if (error instanceof PiRunError) {
         return this.summary({ reason: error.message });
       }
