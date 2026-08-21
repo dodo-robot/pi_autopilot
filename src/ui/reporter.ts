@@ -1,3 +1,5 @@
+import type { CompletedRun } from "../daemon/queue-store.js";
+
 export const DEFAULT_FRAMES: readonly string[] = [
   "⠋",
   "⠙",
@@ -137,4 +139,47 @@ export class Reporter {
       this.deps.write(CLEAR_LINE);
     }
   }
+}
+
+export function formatDaemonStatus(opts: {
+  pid: number;
+  uptimeMs: number;
+  currentIssue: number | null;
+  currentStage: string | null;
+  currentStartedAt: string | null;
+  remainingIssues: number[];
+  completedRuns: CompletedRun[];
+}): string {
+  const uptimeSec = Math.floor(opts.uptimeMs / 1000);
+  const h = Math.floor(uptimeSec / 3600);
+  const m = Math.floor((uptimeSec % 3600) / 60);
+  const s = uptimeSec % 60;
+  const uptime =
+    h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+
+  const lines: string[] = [];
+  lines.push(`Daemon    running  PID ${opts.pid}  uptime ${uptime}`);
+
+  if (opts.currentIssue !== null) {
+    lines.push(
+      `Current   #${opts.currentIssue}  [${opts.currentStage ?? "..."}]`,
+    );
+  }
+
+  if (opts.remainingIssues.length > 0) {
+    lines.push(
+      `Queue     ${opts.remainingIssues.map((n) => `#${n}`).join(" ")}  (${opts.remainingIssues.length} remaining)`,
+    );
+  } else {
+    lines.push("Queue     (empty)");
+  }
+
+  if (opts.completedRuns.length > 0) {
+    const done = opts.completedRuns
+      .map((r) => `#${r.issueNumber} → ${r.outcome}`)
+      .join("  ");
+    lines.push(`Done      ${done}`);
+  }
+
+  return lines.join("\n");
 }

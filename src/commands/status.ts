@@ -2,6 +2,9 @@ import { Command } from "commander";
 import type { RunRecord, RunStage } from "../domain/contracts.js";
 import { appPaths } from "../platform/paths.js";
 import { RunStore, isTerminalStage } from "../persistence/run-store.js";
+import { PidFile } from "../daemon/pid-file.js";
+import { QueueStore } from "../daemon/queue-store.js";
+import { formatDaemonStatus } from "../ui/reporter.js";
 
 export interface StatusCommandDeps {
   /** Override the application data directory (tests use a temp dir). */
@@ -45,15 +48,46 @@ export function registerStatusCommand(
   program
     .command("status")
     .description("Report a run's current stage and next valid action")
-    .argument("<run-id>", "run id")
+    .argument("[run-id]", "run id")
     .option("--json", "emit a machine-readable status report")
-    .action((runId: string, opts: StatusOptions) => {
+    .action((runId: string | undefined, opts: StatusOptions) => {
       const stdout = deps.stdout ?? ((text: string) => process.stdout.write(`${text}\n`));
       const stderr = deps.stderr ?? ((text: string) => process.stderr.write(`${text}\n`));
       const setExitCode = deps.setExitCode ?? ((code: number) => {
         process.exitCode = code;
       });
       const paths = appPaths(deps.dataDir);
+
+      // Daemon overview mode when no run-id argument
+      if (runId === undefined) {
+        const pidFile = new PidFile({ pidPath: paths.pidPath, daemonDir: paths.daemonDir });
+        if (!pidFile.isLive()) {
+          stdout("no daemon running");
+          return;
+        }
+        const pid = pidFile.read()!;
+        const queueStore = new QueueStore({ queuePath: paths.queuePath, daemonDir: paths.daemonDir });
+        const queue = queueStore.read();
+        if (queue === null) {
+          stdout(`daemon running (PID ${pid}) but no queue found`);
+          return;
+        }
+        const currentIssue = queue.issues[queue.currentIndex] ?? null;
+        const remainingIssues = queue.issues.slice(queue.currentIndex + 1);
+        const startedAt = new Date(queue.startedAt).getTime();
+        const uptimeMs = Date.now() - startedAt;
+        stdout(formatDaemonStatus({
+          pid,
+          uptimeMs,
+          currentIssue: currentIssue ?? null,
+          currentStage: null, // stage is in RunStore; omit for now (M4 can add)
+          currentStartedAt: null,
+          remainingIssues,
+          completedRuns: queue.completedRuns,
+        }));
+        return;
+      }
+
       const runStore = new RunStore(paths.dbPath);
       try {
         const run = runStore.getRun(runId);
