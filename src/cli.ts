@@ -16,6 +16,8 @@ import type { ResumeCommandDeps } from "./commands/resume.js";
 import { registerResumeCommand } from "./commands/resume.js";
 import type { RunCommandDeps } from "./commands/run.js";
 import { registerRunCommand } from "./commands/run.js";
+import type { RunsCommandDeps } from "./commands/runs.js";
+import { registerRunsCommand } from "./commands/runs.js";
 import type { StatusCommandDeps } from "./commands/status.js";
 import { registerStatusCommand } from "./commands/status.js";
 
@@ -26,6 +28,7 @@ export type CliDeps = CheckCommandDeps &
   StatusCommandDeps &
   InspectCommandDeps &
   ResumeCommandDeps &
+  RunsCommandDeps &
   AbandonCommandDeps;
 
 /**
@@ -42,6 +45,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
   registerPrepareCommand(program, deps);
   registerAnalyzeCommand(program, deps);
   registerRunCommand(program, deps);
+  registerRunsCommand(program, deps);
   registerStatusCommand(program, deps);
   registerInspectCommand(program, deps);
   registerResumeCommand(program, deps);

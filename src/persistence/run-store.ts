@@ -470,6 +470,30 @@ export class RunStore {
     return rows.map(mapRunRow);
   }
 
+  /**
+   * List runs newest-first (by updated_at; rowid tie-breaks equal timestamps
+   * toward the later-inserted run, matching `getMostRecentRunForIssue`).
+   * Includes terminal runs. Optional `limit` caps the result; an optional
+   * `issue` filter narrows to one owner/repo/issue. `runs` command uses this.
+   */
+  listRuns(
+    options: { limit?: number; issue?: { owner: string; repo: string; issueNumber: number } } = {},
+  ): RunRecord[] {
+    let sql = `SELECT * FROM runs`;
+    const params: Array<string | number> = [];
+    if (options.issue !== undefined) {
+      sql += ` WHERE owner = ? AND repo = ? AND issue_number = ?`;
+      params.push(options.issue.owner, options.issue.repo, options.issue.issueNumber);
+    }
+    sql += ` ORDER BY updated_at DESC, rowid DESC`;
+    if (options.limit !== undefined && options.limit > 0) {
+      sql += ` LIMIT ?`;
+      params.push(options.limit);
+    }
+    const rows = this.db.prepare(sql).all(...params) as unknown as RunRow[];
+    return rows.map(mapRunRow);
+  }
+
   transitions(runId: string): TransitionRecord[] {
     const rows = this.db
       .prepare(
@@ -645,5 +669,15 @@ export class RunStore {
         UNIQUE(run_id)
       );
     `);
+
+    // Add the resume_at column to pre-existing databases. CREATE TABLE IF
+    // NOT EXISTS does not alter existing tables, so databases created
+    // before the resume_at feature would read undefined (not null) for the
+    // column and trip RunStageSchema.parse(undefined). Guard on presence so
+    // this is idempotent across repeated opens.
+    const columns = this.db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+    if (!columns.some((c) => c.name === "resume_at")) {
+      this.db.exec(`ALTER TABLE runs ADD COLUMN resume_at TEXT`);
+    }
   }
 }

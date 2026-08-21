@@ -200,4 +200,52 @@ describe("RunStore", () => {
   it("dropRun is a no-op for an unknown run id", () => {
     expect(() => store.dropRun("does-not-exist")).not.toThrow();
   });
+
+  it("lists runs newest first with a limit and issue filter", () => {
+    const a = store.createRun({ repository: repo, issueNumber: 42 });
+    store.transition(a.id, "PREFLIGHT", "READINESS_CHECK", null);
+    store.transition(a.id, "READINESS_CHECK", "FAILED", null, {
+      resumeAt: "READINESS_CHECK",
+    });
+    const b = store.createRun({ repository: repo, issueNumber: 43 });
+    const c = store.createRun({ repository: { owner: "acme", repo: "other" }, issueNumber: 7 });
+
+    // Newest (by updated_at) first — c and b were created after a, so they sort first.
+    const all = store.listRuns();
+    expect(all.map((r) => r.id)).toEqual([c.id, b.id, a.id]);
+
+    expect(store.listRuns({ limit: 2 }).map((r) => r.id)).toEqual([c.id, b.id]);
+    expect(store.listRuns({ issue: { owner: "acme", repo: "widgets", issueNumber: 42 } }).map((r) => r.id)).toEqual([a.id]);
+  });
+
+  it("migrates a pre-existing database by adding the resume_at column", () => {
+    // A DB created before the resume_at column existed has runs WITHOUT the
+    // column. Opening it through RunStore must ALTER TABLE to add resume_at
+    // (idempotent) so reads don't blow up parsing an undefined stage.
+    const legacyPath = path.join(dir, "legacy.db");
+    const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+    const raw = new DatabaseSync(legacyPath);
+    raw.exec(`
+      CREATE TABLE runs (
+        id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        issue_number INTEGER NOT NULL,
+        stage TEXT NOT NULL,
+        task_snapshot_ref TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO runs (id, owner, repo, issue_number, stage, created_at, updated_at)
+      VALUES ('legacy-1', 'acme', 'widgets', 42, 'FAILED', '2026-08-21T00:00:00.000Z', '2026-08-21T00:00:00.000Z');
+    `);
+    raw.close();
+
+    // Reopen through RunStore: migrate must add the column, not just CREATE IF NOT EXISTS.
+    const legacyStore = new RunStore(legacyPath);
+    const col = legacyStore.listRuns();
+    const run = col.find((r) => r.id === "legacy-1");
+    expect(run).toMatchObject({ id: "legacy-1", stage: "FAILED", resumeAt: null });
+    legacyStore.close();
+  });
 });
