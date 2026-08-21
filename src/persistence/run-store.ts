@@ -42,6 +42,7 @@ export interface CreateRunInput {
   repository: RepositoryRef;
   issueNumber: number;
   taskSnapshotRef?: string | null;
+  resumeAt?: RunStage | null;
   createdAt?: string;
 }
 
@@ -110,6 +111,7 @@ interface RunRow {
   issue_number: number;
   stage: string;
   task_snapshot_ref: string | null;
+  resume_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -157,6 +159,8 @@ function mapRunRow(row: RunRow): RunRecord {
     issueNumber: row.issue_number,
     stage: RunStageSchema.parse(row.stage),
     taskSnapshotRef: row.task_snapshot_ref,
+    resumeAt:
+      row.resume_at === null ? null : RunStageSchema.parse(row.resume_at),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -243,8 +247,8 @@ export class RunStore {
       this.db
         .prepare(
           `INSERT INTO runs
-             (id, owner, repo, issue_number, stage, task_snapshot_ref, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, owner, repo, issue_number, stage, task_snapshot_ref, resume_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -253,6 +257,7 @@ export class RunStore {
           input.issueNumber,
           "PREFLIGHT",
           input.taskSnapshotRef ?? null,
+          input.resumeAt ?? null,
           now,
           now,
         );
@@ -287,6 +292,7 @@ export class RunStore {
     from: RunStage,
     to: RunStage,
     evidenceRef: string | null,
+    opts?: { resumeAt?: RunStage },
   ): TransitionRecord {
     const fromParsed = RunStageSchema.parse(from);
     const toParsed = RunStageSchema.parse(to);
@@ -304,6 +310,9 @@ export class RunStore {
         throw new RunStoreError(
           `stale stage transition: expected ${fromParsed} but run ${runId} is not in that stage`,
         );
+      }
+      if (toParsed === "FAILED" && opts?.resumeAt !== undefined) {
+        this.setRunResumeAt(runId, opts.resumeAt);
       }
       const inserted = this.db
         .prepare(
@@ -331,6 +340,15 @@ export class RunStore {
         cause: error,
       });
     }
+  }
+
+  /** Record the non-terminal stage a run failed from, for later resume-at-stage. */
+  setRunResumeAt(runId: string, stage: RunStage): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET resume_at = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(stage, this.now(), runId);
   }
 
   recordAttempt(input: CreateAttemptInput): AttemptRecord {
@@ -388,6 +406,57 @@ export class RunStore {
       )
       .get(owner, repo, issueNumber) as RunRow | undefined;
     return row === undefined ? null : mapRunRow(row);
+  }
+
+  /**
+   * The most recently updated run for an issue, regardless of its stage
+   * (terminal runs included). `--fresh` uses this to locate the run record
+   * (and its worktree) to drop for a clean restart.
+   */
+  getMostRecentRunForIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+  ): RunRecord | null {
+    // ORDER BY updated_at DESC breaks ties with rowid DESC. SQLite's rowid
+    // ascends with insertion order, so when two runs for an issue share the
+    // same updated_at the later-inserted one is preferred. SQLite-specific;
+    // on other databases with a separate autoincrement column the second
+    // key would instead reference that column.
+    const row = this.db
+      .prepare(
+        `SELECT * FROM runs
+         WHERE owner = ? AND repo = ? AND issue_number = ?
+         ORDER BY updated_at DESC, rowid DESC
+         LIMIT 1`,
+      )
+      .get(owner, repo, issueNumber) as RunRow | undefined;
+    return row === undefined ? null : mapRunRow(row);
+  }
+
+  /**
+   * Delete a run and every row that references it (review findings,
+   * verification runs, attempts, transitions, publications) in one
+   * transaction. Intended for the explicit `--fresh` discard path.
+   */
+  dropRun(runId: string): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`DELETE FROM review_findings WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM verification_runs WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM attempts WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM transitions WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM publications WHERE run_id = ?`).run(runId);
+      this.db.prepare(`DELETE FROM runs WHERE id = ?`).run(runId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // rollback itself failed; propagate the original error
+      }
+      throw error;
+    }
   }
 
   listNonterminalRuns(): RunRecord[] {
@@ -510,6 +579,7 @@ export class RunStore {
         issue_number INTEGER NOT NULL,
         stage TEXT NOT NULL,
         task_snapshot_ref TEXT,
+        resume_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );

@@ -124,6 +124,33 @@ describe("RunStore", () => {
     ).toThrow(/UNIQUE constraint failed/);
   });
 
+  it("persists resume_at for a FAILED transition", () => {
+    const run = store.createRun({ repository: repo, issueNumber: 1 });
+    store.transition(run.id, "PREFLIGHT", "INDEPENDENT_REVIEW", null);
+    store.transition(run.id, "INDEPENDENT_REVIEW", "FAILED", null, {
+      resumeAt: "INDEPENDENT_REVIEW",
+    });
+    const reloaded = store.getRun(run.id)!;
+    expect(reloaded.resumeAt).toBe("INDEPENDENT_REVIEW");
+  });
+
+  it("leaves resume_at null when a run is created without a resumeAt", () => {
+    const run = store.createRun({ repository: repo, issueNumber: 2 });
+    store.close();
+    store = new RunStore(dbPath);
+    const reloaded = store.getRun(run.id)!;
+    expect(reloaded.resumeAt).toBeNull();
+  });
+
+  it("leaves resume_at null across a non-FAILED transition without opts", () => {
+    const run = store.createRun({ repository: repo, issueNumber: 3 });
+    store.transition(run.id, "PREFLIGHT", "READINESS_CHECK", null);
+    store.close();
+    store = new RunStore(dbPath);
+    const reloaded = store.getRun(run.id)!;
+    expect(reloaded.resumeAt).toBeNull();
+  });
+
   it("records the frozen task snapshot reference", () => {
     const run = store.createRun({ repository: repo, issueNumber: 42 });
     const updated = store.setTaskSnapshotRef(
@@ -134,5 +161,43 @@ describe("RunStore", () => {
     expect(store.getRun(run.id)?.taskSnapshotRef).toBe(
       "runs/abc/task-snapshot.json",
     );
+  });
+
+  it("returns the most recent run for an issue regardless of stage", () => {
+    const first = store.createRun({ repository: repo, issueNumber: 42 });
+    store.transition(first.id, "PREFLIGHT", "FAILED", null);
+    const second = store.createRun({ repository: repo, issueNumber: 42 });
+    expect(
+      store.getMostRecentRunForIssue("acme", "widgets", 42)?.id,
+    ).toBe(second.id);
+  });
+
+  it("returns null when no run exists for an issue", () => {
+    expect(store.getMostRecentRunForIssue("acme", "widgets", 999)).toBeNull();
+  });
+
+  it("drops a run and its child records in a transaction", () => {
+    const run = store.createRun({ repository: repo, issueNumber: 1 });
+    store.transition(run.id, "PREFLIGHT", "FAILED", null);
+    store.recordAttempt({
+      runId: run.id,
+      role: "implementer",
+      attemptNumber: 1,
+      model: "anthropic/claude-sonnet-4",
+      thinking: "high",
+    });
+
+    store.dropRun(run.id);
+
+    expect(store.getRun(run.id)).toBeNull();
+    expect(store.listAttempts(run.id)).toEqual([]);
+    expect(store.transitions(run.id)).toEqual([]);
+    expect(
+      store.getMostRecentRunForIssue("acme", "widgets", 1),
+    ).toBeNull();
+  });
+
+  it("dropRun is a no-op for an unknown run id", () => {
+    expect(() => store.dropRun("does-not-exist")).not.toThrow();
   });
 });

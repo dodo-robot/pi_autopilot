@@ -229,6 +229,15 @@ describe("nextStage", () => {
     }
   });
 
+  it("allows RESUME from FAILED into a non-terminal stage", () => {
+    expect(
+      nextStage(
+        { type: "RESUME", resumeTo: "INDEPENDENT_REVIEW" },
+        { stage: "FAILED", correctionCycles: 0 },
+      ),
+    ).toBe("INDEPENDENT_REVIEW");
+  });
+
   it("moves BLOCKED -> IMPLEMENTATION on RESUME when resuming to implementation", () => {
     expect(
       nextStage(

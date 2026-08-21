@@ -110,7 +110,14 @@ export type WorkflowEvent =
   | { type: "PUBLISHED" }
   | { type: "FATAL_ERROR" }
   | { type: "CANCELLED" }
-  | { type: "RESUME"; resumeTo: "IMPLEMENTATION" | "CORRECTION" };
+  | {
+      type: "RESUME";
+      resumeTo:
+        | "IMPLEMENTATION"
+        | "CORRECTION"
+        | "VERIFICATION"
+        | "INDEPENDENT_REVIEW";
+    };
 
 /**
  * Resolve the next stage for an explicit event fired while a run occupies
@@ -128,11 +135,12 @@ export function nextStage(event: WorkflowEvent, context: TransitionContext): Run
   const from = context.stage ?? "INDEPENDENT_REVIEW";
 
   if (event.type === "RESUME") {
-    if (from !== BLOCKED_STAGE) {
-      throw new Error(`illegal transition: ${from} -> ${event.resumeTo} (RESUME only applies from BLOCKED)`);
+    if (from !== BLOCKED_STAGE && from !== "FAILED") {
+      throw new Error(`illegal transition: ${from} -> ${event.resumeTo} (RESUME only applies from BLOCKED or FAILED)`);
     }
-    // RESUME is the sole legal exit from BLOCKED; validated directly rather
-    // than through TRANSITIONS (which intentionally lists no BLOCKED edges).
+    // RESUME is the sole legal exit from the quiescent BLOCKED and FAILED
+    // stages; validated directly rather than through TRANSITIONS (which
+    // intentionally lists no outgoing edges for either stage).
     return event.resumeTo;
   }
 

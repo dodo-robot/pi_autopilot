@@ -108,11 +108,13 @@ worktree and opens a PR on success.
 ```text
 autopilot check <issue>            # read-only readiness assessment
 autopilot prepare <issue>          # draft + approve a managed issue update
-autopilot run <issue>              # execute a ready issue end to end
+autopilot run <issue>              # execute a ready issue end to end (--fresh discards any prior worktree/run and restarts)
 autopilot analyze <ref>            # assess backlog readiness across an epic or explicit issue set (read-only)
 autopilot status <run-id>          # current stage + next valid action
 autopilot inspect <run-id>         # snapshot, evidence, model usage, history
-autopilot resume <run-id>          # fresh correction attempt for a BLOCKED run
+autopilot resume <run-id>          # fresh correction attempt for a BLOCKED or FAILED run
+                                    #  - BLOCKED: restart the implementer in the preserved worktree
+                                    #  - FAILED:  re-verify the existing implementation, then retry the interrupted role at its resume_at stage
 autopilot abandon <run-id>         # mark a run CANCELLED (keeps worktree/branch)
 ```
 
@@ -133,7 +135,7 @@ the refiner session timeout (falling back to the repository policy's
 | `prepare` | always (declined/applied/`--json` preview) | thrown error, or the issue changed during analysis | — |
 | `run` | `PR_OPEN` | thrown error | `NEEDS_REFINEMENT` or `BLOCKED` |
 | `analyze` | executable work exists and no needs-refinement (or `--min-ready` satisfied) | argument/infrastructure error | zero executable work, any needs-refinement, or `--min-ready` unsatisfied |
-| `resume` | `PR_OPEN` | thrown error (including "not BLOCKED") | `NEEDS_REFINEMENT` or `BLOCKED` |
+| `resume` | `PR_OPEN` | thrown error (including "not BLOCKED or FAILED") | `NEEDS_REFINEMENT` or `BLOCKED` |
 | `status` | run found | run not found, or thrown error | — |
 | `inspect` | run found | run not found, or thrown error | — |
 | `abandon` | run marked `CANCELLED` | thrown error (including "already terminal") | — |
@@ -227,7 +229,9 @@ secret-shaped values found anywhere (GitHub `ghp_…`/`github_pat_…` tokens,
 `Bearer …` headers) are replaced with `[REDACTED]` before being printed or
 serialized, in both human and `--json` output.
 
-## Blocked-run runbook: inspect, resume, abandon
+## Blocked/FAILED-run runbook: inspect, resume, abandon
+
+## Blocked runs
 
 A run reaches `BLOCKED` when useful work exists but continuing requires
 human input or a new bounded attempt — a failed setup command, an
@@ -261,6 +265,50 @@ implementer session that sees only the frozen task snapshot (and, if the
 prior attempt failed at verification, the current worktree state), and it
 is subject to the same budgets as the original run (attempt/cycle counters
 carry over, they do not reset).
+
+## FAILED runs
+
+A run lands in `FAILED` when a non-readiness stage errors or when the issue
+turned out not to be testable at runtime; the worktree and branch are
+also preserved (subject to `workspace.retainBlockedWorktree`). Unlike a
+`BLOCKED` run, a `FAILED` run's implementation may still be sound but
+unfinished — the failure happened mid-flight rather than at a decision
+point awaiting human input.
+
+If the failure happened at a non-terminal stage (for example
+`VERIFICATION` or `INDEPENDENT_REVIEW`), the run records that stage in
+`resume_at`, and `resume` can continue from exactly there:
+
+```bash
+# Continue a run that failed at INDEPENDENT_REVIEW: re-verify the
+# existing implementation in place, then retry the reviewer (no
+# re-implementation). Optional model overrides as with `run`.
+autopilot resume <run-id> [--model ... --thinking ...]
+```
+
+`resume` on a `FAILED` run **re-verifies** the preserved worktree's
+existing implementation rather than re-implementing it, then retries the
+interrupted role: an accepted review publishes; a verification failure or
+`CHANGES_REQUESTED` falls into the same bounded correction loop as a
+`BLOCKED` resume (attempt/cycle budgets carry over). If the failure was at
+`IMPLEMENTATION` (no usable implementation yet), `resume` proceeds as a
+normal fresh implementation attempt.
+
+## Starting over from scratch: `run --fresh`
+
+The escape hatch when resumes are not converging is a full restart:
+
+```bash
+# Discard the existing worktree and run record for the issue and start a
+# clean run from the base branch.
+autopilot run <issue> --fresh
+```
+
+`--fresh` is **destructive**: it immediately discards the most recent
+worktree and run record for that issue (no confirmation prompt) before
+beginning a fresh run, which also unblocks a "branch already exists"
+failure from a prior FAILED run. Use it only when you are willing to throw
+away the previous attempt's work.
 
 ## M1 non-goals
 

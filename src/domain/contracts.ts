@@ -205,6 +205,7 @@ export const RunRecordSchema = z.object({
   issueNumber: z.number().int().positive(),
   stage: RunStageSchema,
   taskSnapshotRef: z.string().nullable(),
+  resumeAt: RunStageSchema.nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

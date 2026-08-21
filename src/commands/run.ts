@@ -1,10 +1,14 @@
 import { Command } from "commander";
 import type { RoleModelEntry, RoleModelOverride } from "../config/schema.js";
 import { ThinkingLevelSchema } from "../config/schema.js";
+import { loadRepositoryConfig } from "../config/load-config.js";
+import type { TaskSnapshot } from "../domain/contracts.js";
 import type { RepositoryContext } from "../github/repository-context.js";
 import { assertRepositoryMatches } from "../github/repository-context.js";
 import { appPaths } from "../platform/paths.js";
+import { ArtifactStore } from "../persistence/artifact-store.js";
 import { RunStore } from "../persistence/run-store.js";
+import { WorkspaceManager } from "../workspace/workspace-manager.js";
 import type { ProcessRunner } from "../platform/process-runner.js";
 import { ProcessRunner as ProcessRunnerImpl } from "../platform/process-runner.js";
 import { resolveRepositoryContext } from "../github/repository-context.js";
@@ -32,6 +36,8 @@ interface RunOptions {
   implementerThinking?: string;
   reviewerModel?: string;
   reviewerThinking?: string;
+  /** Discard any existing worktree/run record for this issue and start clean. */
+  fresh?: boolean;
 }
 
 /**
@@ -56,6 +62,7 @@ export function registerRunCommand(program: Command, deps: RunCommandDeps = {}):
     .option("--implementer-thinking <level>", "override the implementer thinking level")
     .option("--reviewer-model <model>", "override the reviewer model")
     .option("--reviewer-thinking <level>", "override the reviewer thinking level")
+    .option("--fresh", "discard any existing worktree/run for this issue and start clean")
     .action(async (issueRef: string, opts: RunOptions) => {
       const stdout = deps.stdout ?? ((text: string) => process.stdout.write(`${text}\n`));
       const stderr = deps.stderr ?? ((text: string) => process.stderr.write(`${text}\n`));
@@ -101,6 +108,10 @@ async function runIssue(
       : await resolveRepositoryContext(deps.cwd ?? process.cwd(), runner);
   const { number } = resolveIssueRef(issueRef, ctx);
 
+  if (opts.fresh === true) {
+    await discardExistingRun(ctx, number, deps, runner);
+  }
+
   const overrides = resolveOverrides(opts);
   const service = new RunService({
     ...deps,
@@ -116,6 +127,68 @@ async function runIssue(
     printTransitions(deps, summary.runId, (text) => reporter.line(text));
   }
   return summary;
+}
+
+/**
+ * `--fresh` pre-step: drop the most recent run record for this issue and
+ * discard its worktree/branch so a clean run can start. No-op when there is
+ * no prior run. FAILED is terminal, so this intentionally uses
+ * `getMostRecentRunForIssue` (any stage) rather than `getActiveRunForIssue`.
+ */
+async function discardExistingRun(
+  ctx: RepositoryContext,
+  issueNumber: number,
+  deps: RunCommandDeps,
+  runner: ProcessRunner,
+): Promise<void> {
+  const paths = appPaths(deps.dataDir);
+  const runStore = new RunStore(paths.dbPath);
+  try {
+    const run = runStore.getMostRecentRunForIssue(
+      ctx.repository.owner,
+      ctx.repository.repo,
+      issueNumber,
+    );
+    if (run === null) return;
+
+    const config = await loadRepositoryConfig(ctx.root);
+    const artifacts = new ArtifactStore(paths);
+    let title = "";
+    if (run.taskSnapshotRef !== null) {
+      try {
+        const snapshot = await artifacts.readJson<TaskSnapshot>(
+          run.id,
+          run.taskSnapshotRef,
+        );
+        title = snapshot.objective ?? "";
+      } catch {
+        // Snapshot artifact missing is fine: fall back to the issue-only branch.
+      }
+    }
+
+    const workspaceManager = new WorkspaceManager({
+      processRunner: runner,
+      repository: ctx,
+      policy: config.workspace,
+    });
+    const workspace = workspaceManager.locate({
+      runId: run.id,
+      issueNumber,
+      title,
+      baseBranch: config.workspace.baseBranch,
+    });
+    // Guarantee the run record is dropped even if discarding the worktree
+    // throws (e.g. a git worktree remove fails). Otherwise the record would
+    // be orphaned with no worktree to locate, and a repeat `--fresh` could
+    // get stuck trying to discard a workspace that no longer exists.
+    try {
+      await workspaceManager.discard(workspace);
+    } finally {
+      runStore.dropRun(run.id);
+    }
+  } finally {
+    runStore.close();
+  }
 }
 
 /** Print the persisted stage transitions for this run, in order. */
