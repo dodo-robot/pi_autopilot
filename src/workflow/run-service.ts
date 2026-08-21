@@ -574,6 +574,7 @@ class RunAttempt {
       artifacts: this.deps.artifacts,
       paths: this.deps.paths,
       refinerModel: this.deps.refinerModel,
+      refinerTimeoutMs: this.deps.config.budgets.refiner.timeoutMinutes * 60_000,
       analysisId: () => analysisId(this.deps.run.issueNumber),
     });
 
