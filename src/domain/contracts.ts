@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /** Logical agent roles the orchestrator can launch. */
-export const RoleSchema = z.enum(["refiner", "implementer", "reviewer"]);
+export const RoleSchema = z.enum(["refiner", "implementer", "reviewer", "brainstormer"]);
 export type Role = z.infer<typeof RoleSchema>;
 
 /** Explicit workflow stages a run can occupy. */
@@ -190,11 +190,25 @@ export const ReviewerResultSchema = z.discriminatedUnion("outcome", [
 ]);
 export type ReviewerResult = z.infer<typeof ReviewerResultSchema>;
 
+export const BrainstormerResultSchema = z.object({
+  questions: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        text: z.string().min(1),
+      }),
+    )
+    .min(1)
+    .max(3),
+});
+export type BrainstormerResult = z.infer<typeof BrainstormerResultSchema>;
+
 /** Union of all role results; runners narrow by the session role. */
 export const RoleResultSchema = z.union([
   RefinerResultSchema,
   ImplementerResultSchema,
   ReviewerResultSchema,
+  BrainstormerResultSchema,
 ]);
 export type RoleResult = z.infer<typeof RoleResultSchema>;
 

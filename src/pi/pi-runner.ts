@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import type { z } from "zod";
 import type { Role, RoleResult } from "../domain/contracts.js";
 import {
+  BrainstormerResultSchema,
   ImplementerResultSchema,
   RefinerResultSchema,
   ReviewerResultSchema,
@@ -21,6 +22,7 @@ const ROLE_SCHEMAS: Record<Role, z.ZodType> = {
   refiner: RefinerResultSchema,
   implementer: ImplementerResultSchema,
   reviewer: ReviewerResultSchema,
+  brainstormer: BrainstormerResultSchema,
 };
 
 /** Tools available to analysis roles (refiner/reviewer): read-only + submit. */
@@ -33,6 +35,7 @@ const ROLE_TOOLS: Record<Role, string[]> = {
   refiner: READ_ONLY_TOOLS,
   reviewer: READ_ONLY_TOOLS,
   implementer: IMPLEMENTER_TOOLS,
+  brainstormer: READ_ONLY_TOOLS,
 };
 
 export interface PiRunRequest {
