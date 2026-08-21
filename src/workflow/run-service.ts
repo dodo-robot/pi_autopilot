@@ -1109,10 +1109,18 @@ function buildReviewCorrectionPrompt(
   ].join("\n\n");
 }
 
-function buildReviewerPrompt(
+export function buildReviewerPrompt(
   snapshot: TaskSnapshot,
   verification: VerificationEvidence,
 ): string {
+  const resultExample = {
+    outcome: "APPROVED",
+    criteriaResults: [
+      { criterionId: "ac1", passed: true, notes: "verified in the worktree" },
+    ],
+    findings: [],
+  };
+
   return [
     "You are an independent reviewer for a bounded, supervised task.",
     "You have not seen any implementer transcript or reasoning. Evaluate",
@@ -1120,9 +1128,17 @@ function buildReviewerPrompt(
     "deterministic verification evidence below.",
     "",
     "IMPORTANT: When you finish your review, you MUST call the submit_result",
-    "tool with your outcome (APPROVED or CHANGES_REQUESTED). Do not just write",
-    "'APPROVED' or 'CHANGES_REQUESTED' in text. The run will fail if",
-    "submit_result is not called.",
+    "tool with a JSON payload like this:",
+    JSON.stringify(resultExample, null, 2),
+    "",
+    "ALL fields are required. For an APPROVED outcome you MUST include",
+    "criteriaResults with one entry per task acceptance criterion (criterionId",
+    "must match a snapshot acceptanceCriteria id; passed is a boolean; notes is",
+    "a string) plus a findings array. Use outcome CHANGES_REQUESTED (same",
+    "fields plus findings describing each requested change) if the work does",
+    "not satisfy a criterion, PRODUCT_AMBIGUITY if the task is ambiguous, or",
+    "FAILED if you cannot complete the review. Do not just write the outcome",
+    "in text; the run will fail if submit_result is not called.",
     "",
     JSON.stringify(snapshot, null, 2),
     JSON.stringify(verification, null, 2),
