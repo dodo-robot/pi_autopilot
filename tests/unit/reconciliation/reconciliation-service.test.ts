@@ -1,0 +1,322 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { AutopilotConfig } from "../../../src/config/schema.js";
+import type { ResolvedRoleModel } from "../../../src/config/load-config.js";
+import type { ReconcilerResult } from "../../../src/domain/contracts.js";
+import { GitHubError } from "../../../src/github/github-adapter.js";
+import type { GitHubIssue, GitHubPort } from "../../../src/github/github-adapter.js";
+import type { RepositoryContext } from "../../../src/github/repository-context.js";
+import { ArtifactStore } from "../../../src/persistence/artifact-store.js";
+import { PiRunError } from "../../../src/pi/pi-runner.js";
+import type { PiExecution, PiRunRequest } from "../../../src/pi/pi-runner.js";
+import { appPaths } from "../../../src/platform/paths.js";
+import { ReconciliationService } from "../../../src/reconciliation/reconciliation-service.js";
+import type { ReconcilerRunner } from "../../../src/reconciliation/reconciliation-service.js";
+
+const repository: RepositoryContext = {
+  root: "/tmp/fake-repo",
+  repository: { owner: "acme", repo: "widgets" },
+  originUrl: "git@github.com:acme/widgets.git",
+  currentBranch: "main",
+  isClean: true,
+};
+
+const config: AutopilotConfig = {
+  version: 1,
+  workspace: {
+    baseBranch: "main",
+    branchPrefix: "autopilot/",
+    requireCleanCheckout: true,
+    retainBlockedWorktree: true,
+  },
+  commands: { setup: [], verify: ["npm test"] },
+  agents: {},
+  agentPolicy: { allowedCommands: [], protectedPaths: [], allowNetwork: false },
+  budgets: {
+    refiner: { timeoutMinutes: 5 },
+    reconciler: { timeoutMinutes: 10 },
+    implementation: { timeoutMinutes: 60, maxAttempts: 3 },
+    review: { timeoutMinutes: 20, maxCorrectionCycles: 2 },
+  },
+  publication: { draftPr: false, issueComment: "concise", autoMerge: false },
+  reconciliation: {},
+};
+
+const reconcilerModel: ResolvedRoleModel = {
+  model: "anthropic/claude-haiku",
+  thinking: "high",
+  source: "repository",
+};
+
+function makeIssue(number: number, title: string, body: string): GitHubIssue {
+  return {
+    number,
+    nodeId: `I_${number}`,
+    title,
+    body,
+    updatedAt: "2026-08-18T00:00:00Z",
+    state: "open",
+    htmlUrl: `https://github.com/acme/widgets/issues/${number}`,
+  };
+}
+
+const EPIC = makeIssue(
+  12,
+  "Authentication overhaul",
+  "- [ ] #15 OAuth callback\n- [ ] #16 Create user from GitHub identity",
+);
+const ISSUE_15 = makeIssue(15, "OAuth callback", "Handles the GitHub OAuth callback");
+const ISSUE_16 = makeIssue(16, "Create user from GitHub identity", "Creates the user row");
+
+class FakeGitHub implements GitHubPort {
+  readonly mutationCalls: string[] = [];
+  private readonly issues = new Map<number, GitHubIssue>([
+    [12, EPIC],
+    [15, ISSUE_15],
+    [16, ISSUE_16],
+  ]);
+
+  async getIssue(number: number): Promise<GitHubIssue> {
+    const issue = this.issues.get(number);
+    if (issue === undefined) {
+      throw new GitHubError(`failed to fetch issue #${number}`, { cause: { status: 404 } });
+    }
+    return issue;
+  }
+
+  async updateIssueBody(): Promise<GitHubIssue> {
+    this.mutationCalls.push("updateIssueBody");
+    throw new Error("must not be called");
+  }
+
+  async createIssueComment(): Promise<void> {
+    this.mutationCalls.push("createIssueComment");
+    throw new Error("must not be called");
+  }
+
+  async findPullRequestByHead(): Promise<null> {
+    return null;
+  }
+
+  async createPullRequest(): Promise<never> {
+    this.mutationCalls.push("createPullRequest");
+    throw new Error("must not be called");
+  }
+
+  async findIssueCommentByMarker(): Promise<null> {
+    return null;
+  }
+}
+
+function fakePi(result: ReconcilerResult): ReconcilerRunner {
+  return {
+    async run(): Promise<PiExecution> {
+      return {
+        result,
+        exitCode: 0,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+        resultPath: "/tmp/result.json",
+        sessionDir: "/tmp/session",
+      };
+    },
+  };
+}
+
+const dirs: string[] = [];
+function makeService(pi: ReconcilerRunner, github: GitHubPort = new FakeGitHub()) {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "autopilot-reconcile-"));
+  dirs.push(dataDir);
+  const paths = appPaths(dataDir);
+  return new ReconciliationService({
+    repository,
+    config,
+    github,
+    pi,
+    artifacts: new ArtifactStore(paths),
+    paths,
+    reconcilerModel,
+    analysisId: () => "reconcile-test",
+    now: () => "2026-08-22T00:00:00Z",
+  });
+}
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("ReconciliationService.reconcile", () => {
+  it("produces a coverage map and policy-classified patches from a valid reconciler result", async () => {
+    const service = makeService(
+      fakePi({
+        coverage: [
+          {
+            requirementId: "REQ-AUTH-001",
+            description: "Users can log in via GitHub",
+            epic: 12,
+            issues: [15],
+            status: "covered",
+            evidence: "issue #15",
+          },
+          {
+            requirementId: "REQ-AUTH-009",
+            description: "Admins can revoke sessions",
+            epic: 12,
+            issues: [],
+            status: "missing",
+            evidence: "no matching issue",
+          },
+        ],
+        patches: [
+          { type: "KEEP", issue: 15, reason: "correct as-is" },
+          {
+            type: "ENRICH_ISSUE",
+            issue: 16,
+            reason: "missing acceptance criteria",
+            patch: {
+              goal: "Create a user record from a verified GitHub identity",
+              sourceRequirements: ["REQ-AUTH-004"],
+              acceptanceCriteria: ["A first login creates exactly one user row"],
+              constraints: [],
+              nonGoals: [],
+              validation: ["npm test -- auth"],
+              relevantAreas: ["src/auth/"],
+            },
+          },
+        ],
+      }),
+    );
+
+    const report = await service.reconcile(12, []);
+
+    expect(report.epicRef).toBe(12);
+    expect(report.coverage).toHaveLength(2);
+    expect(report.summary).toMatchObject({
+      requirementsCovered: 1,
+      requirementsMissing: 1,
+      requirementsTotal: 2,
+    });
+    expect(report.patches).toContainEqual(
+      expect.objectContaining({ type: "KEEP", issue: 15, policy: "requires-approval" }),
+    );
+    expect(report.patches).toContainEqual(
+      expect.objectContaining({ type: "ENRICH_ISSUE", issue: 16, policy: "auto-safe" }),
+    );
+  });
+
+  it("passes through a NEEDS_HUMAN patch the reconciler raised for an oversized issue, classified requires-approval", async () => {
+    const service = makeService(
+      fakePi({
+        coverage: [],
+        patches: [
+          {
+            type: "NEEDS_HUMAN",
+            issue: 16,
+            ambiguityType: "ENGINEERING",
+            reason:
+              "issue #16 bundles three independent outcomes (create user, link identity, send welcome email) into one issue",
+            questions: [
+              "Should this be split into three issues, or is bundling them intentional?",
+            ],
+          },
+        ],
+      }),
+    );
+
+    const report = await service.reconcile(12, []);
+
+    expect(report.patches).toContainEqual(
+      expect.objectContaining({
+        type: "NEEDS_HUMAN",
+        issue: 16,
+        ambiguityType: "ENGINEERING",
+        policy: "requires-approval",
+      }),
+    );
+  });
+
+  it("downgrades an ENRICH_ISSUE patch to KEEP when the issue already carries the identical section", async () => {
+    const enrichment = {
+      goal: "Create a user record from a verified GitHub identity",
+      sourceRequirements: ["REQ-AUTH-004"],
+      acceptanceCriteria: ["A first login creates exactly one user row"],
+      constraints: [],
+      nonGoals: [],
+      validation: ["npm test -- auth"],
+      relevantAreas: ["src/auth/"],
+    };
+    const { upsertReconciliationSection } = await import(
+      "../../../src/reconciliation/managed-section.js"
+    );
+    const alreadyEnriched = new (class extends FakeGitHub {
+      override async getIssue(number: number): Promise<GitHubIssue> {
+        const issue = await super.getIssue(number);
+        if (number === 16) {
+          return { ...issue, body: upsertReconciliationSection(issue.body, enrichment) };
+        }
+        return issue;
+      }
+    })();
+
+    const service = makeService(
+      fakePi({
+        coverage: [],
+        patches: [
+          { type: "ENRICH_ISSUE", issue: 16, reason: "missing acceptance criteria", patch: enrichment },
+        ],
+      }),
+      alreadyEnriched,
+    );
+
+    const report = await service.reconcile(12, []);
+    expect(report.patches).toContainEqual(
+      expect.objectContaining({ type: "KEEP", issue: 16 }),
+    );
+  });
+
+  it("produces a NEEDS_HUMAN patch for an epic checklist ref that cannot be fetched", async () => {
+    const withMissingRef = new (class extends FakeGitHub {
+      override async getIssue(number: number): Promise<GitHubIssue> {
+        if (number === 12) {
+          return makeIssue(12, "Authentication overhaul", "- [ ] #15 OAuth callback\n- [ ] #999 Gone");
+        }
+        return super.getIssue(number);
+      }
+    })();
+
+    const service = makeService(fakePi({ coverage: [], patches: [] }), withMissingRef);
+    const report = await service.reconcile(12, []);
+
+    expect(report.patches).toContainEqual(
+      expect.objectContaining({
+        type: "NEEDS_HUMAN",
+        issue: null,
+        ambiguityType: "MISSING_CONTEXT",
+      }),
+    );
+  });
+
+  it("propagates a PiRunError from the reconciler session without swallowing it", async () => {
+    const failing: ReconcilerRunner = {
+      async run(): Promise<PiExecution> {
+        throw new PiRunError("invalid reconciler result: patches: Required", "reconciler", {
+          stdout: "",
+          stderr: "",
+          resultPath: "/tmp/result.json",
+        });
+      },
+    };
+    const service = makeService(failing);
+    await expect(service.reconcile(12, [])).rejects.toThrow(PiRunError);
+  });
+
+  it("never calls a GitHub mutation method", async () => {
+    const github = new FakeGitHub();
+    const service = makeService(fakePi({ coverage: [], patches: [] }), github);
+    await service.reconcile(12, []);
+    expect(github.mutationCalls).toEqual([]);
+  });
+});
