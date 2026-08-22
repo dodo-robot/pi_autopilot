@@ -68,6 +68,10 @@ const VALID_PAYLOADS = {
     criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
   }),
+  "valid-reconciler": JSON.stringify({
+    coverage: [],
+    patches: [],
+  }),
 };
 
 function writeResult(payload) {

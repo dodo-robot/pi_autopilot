@@ -1,7 +1,17 @@
 import { z } from "zod";
+import {
+  BacklogPatchSchema,
+  CoverageEntrySchema,
+} from "./reconciliation.js";
 
 /** Logical agent roles the orchestrator can launch. */
-export const RoleSchema = z.enum(["refiner", "implementer", "reviewer", "brainstormer"]);
+export const RoleSchema = z.enum([
+  "refiner",
+  "implementer",
+  "reviewer",
+  "brainstormer",
+  "reconciler",
+]);
 export type Role = z.infer<typeof RoleSchema>;
 
 /** Explicit workflow stages a run can occupy. */
@@ -203,12 +213,19 @@ export const BrainstormerResultSchema = z.object({
 });
 export type BrainstormerResult = z.infer<typeof BrainstormerResultSchema>;
 
+export const ReconcilerResultSchema = z.object({
+  coverage: z.array(CoverageEntrySchema),
+  patches: z.array(BacklogPatchSchema),
+});
+export type ReconcilerResult = z.infer<typeof ReconcilerResultSchema>;
+
 /** Union of all role results; runners narrow by the session role. */
 export const RoleResultSchema = z.union([
   RefinerResultSchema,
   ImplementerResultSchema,
   ReviewerResultSchema,
   BrainstormerResultSchema,
+  ReconcilerResultSchema,
 ]);
 export type RoleResult = z.infer<typeof RoleResultSchema>;
 

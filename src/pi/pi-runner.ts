@@ -12,6 +12,7 @@ import type { Role, RoleResult } from "../domain/contracts.js";
 import {
   BrainstormerResultSchema,
   ImplementerResultSchema,
+  ReconcilerResultSchema,
   RefinerResultSchema,
   ReviewerResultSchema,
 } from "../domain/contracts.js";
@@ -23,6 +24,7 @@ const ROLE_SCHEMAS: Record<Role, z.ZodType> = {
   implementer: ImplementerResultSchema,
   reviewer: ReviewerResultSchema,
   brainstormer: BrainstormerResultSchema,
+  reconciler: ReconcilerResultSchema,
 };
 
 /** Tools available to analysis roles (refiner/reviewer): read-only + submit. */
@@ -36,6 +38,7 @@ const ROLE_TOOLS: Record<Role, string[]> = {
   reviewer: READ_ONLY_TOOLS,
   implementer: IMPLEMENTER_TOOLS,
   brainstormer: READ_ONLY_TOOLS,
+  reconciler: READ_ONLY_TOOLS,
 };
 
 export interface PiRunRequest {
