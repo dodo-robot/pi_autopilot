@@ -93,6 +93,43 @@ describe("loadRepositoryConfig", () => {
       /missing repository config/,
     );
   });
+
+  it("defaults reconciliation.requirementsPaths to undefined when the section is omitted", async () => {
+    const config = await loadMinimalFixture();
+    expect(config.reconciliation.requirementsPaths).toBeUndefined();
+    expect(config.budgets.reconciler.timeoutMinutes).toBe(10);
+  });
+
+  it("loads an explicit reconciliation.requirementsPaths list, including an explicit empty list", async () => {
+    const withPaths = await loadRepositoryConfig(
+      tempConfigRoot(
+        `version: 1\ncommands:\n  verify:\n    - npm test\nreconciliation:\n  requirementsPaths:\n    - requirements.md\n    - docs/architecture\n`,
+      ),
+    );
+    expect(withPaths.reconciliation.requirementsPaths).toEqual([
+      "requirements.md",
+      "docs/architecture",
+    ]);
+
+    const withEmptyPaths = await loadRepositoryConfig(
+      tempConfigRoot(
+        `version: 1\ncommands:\n  verify:\n    - npm test\nreconciliation:\n  requirementsPaths: []\n`,
+      ),
+    );
+    expect(withEmptyPaths.reconciliation.requirementsPaths).toEqual([]);
+  });
+
+  it("loads an agents.reconciler model entry", async () => {
+    const config = await loadRepositoryConfig(
+      tempConfigRoot(
+        `version: 1\ncommands:\n  verify:\n    - npm test\nagents:\n  reconciler:\n    model: anthropic/claude-opus-4\n    thinking: high\n`,
+      ),
+    );
+    expect(config.agents.reconciler).toEqual({
+      model: "anthropic/claude-opus-4",
+      thinking: "high",
+    });
+  });
 });
 
 describe("resolveRoleModel", () => {

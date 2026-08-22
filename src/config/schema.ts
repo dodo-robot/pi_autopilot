@@ -24,6 +24,7 @@ export const RoleAgentsConfigSchema = z
     implementer: RoleModelEntrySchema.optional(),
     reviewer: RoleModelEntrySchema.optional(),
     brainstormer: RoleModelEntrySchema.optional(),
+    reconciler: RoleModelEntrySchema.optional(),
   })
   .prefault({});
 export type RoleAgentsConfig = z.infer<typeof RoleAgentsConfigSchema>;
@@ -69,6 +70,11 @@ export const AutopilotConfigSchema = z.object({
           timeoutMinutes: z.number().int().positive().default(5),
         })
         .prefault({}),
+      reconciler: z
+        .object({
+          timeoutMinutes: z.number().int().positive().default(10),
+        })
+        .prefault({}),
       implementation: z
         .object({
           timeoutMinutes: z.number().int().positive().default(60),
@@ -88,6 +94,11 @@ export const AutopilotConfigSchema = z.object({
       draftPr: z.boolean().default(false),
       issueComment: z.enum(["concise"]).default("concise"),
       autoMerge: z.boolean().default(false),
+    })
+    .prefault({}),
+  reconciliation: z
+    .object({
+      requirementsPaths: z.array(z.string()).optional(),
     })
     .prefault({}),
 });
