@@ -143,6 +143,16 @@ reconciler prompt from:
   artifact store), so the model can see what it previously proposed and
   avoid re-deriving requirement IDs from scratch.
 
+**Known limitation of this milestone:** the prior-report lookup described
+above is not implemented — `ReconciliationService.reconcile()` never reads a
+prior report from the artifact store, so `ReconcilerPromptInput.priorReport`
+is always omitted in production. This is a deliberate, documented gap, not
+an oversight: building a "find the latest report for this epic" lookup was
+ruled out of scope for the fix wave that closed this milestone. Consequence:
+REQ-IDs are **not** guaranteed stable across repeated `reconcile` runs on
+the same epic until a future milestone wires this up (the idempotency
+guarantee in §7.1 is unaffected — it does not depend on `priorReport`).
+
 The session runs with the same sandboxing every other role already has:
 worktree = repository root, `agentPolicy.protectedPaths` enforced, read-only
 tool access (`allowedCommands: []`, matching the refiner — reconciliation

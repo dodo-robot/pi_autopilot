@@ -77,6 +77,15 @@ describe("PiRunner", () => {
     expect(execution.result).toMatchObject({ outcome: "READY" });
   });
 
+  it("accepts a valid reconciler result", async () => {
+    const request = makeRequest({
+      role: "reconciler",
+      prompt: "Reconcile the epic. SCENARIO:valid-reconciler",
+    });
+    const execution = await new PiRunner().run(request);
+    expect(execution.result).toMatchObject({ coverage: [], patches: [] });
+  });
+
   it("rejects malformed JSON from the role session", async () => {
     const request = makeRequest({
       prompt: "Review the changes. SCENARIO:malformed",

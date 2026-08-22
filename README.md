@@ -103,6 +103,39 @@ is written to GitHub until you approve (or `--json`, which only previews).
 Once `check` reports `READY`, `run` executes the task in an isolated
 worktree and opens a PR on success.
 
+## Backlog reconciliation: `reconcile`
+
+```text
+requirement/architecture docs + existing epic + repository
+    ↓
+autopilot reconcile <epic>       # one reconciler session; always dry-run
+    ↓
+coverage map + typed patch plan (KEEP/ENRICH_ISSUE/CREATE_ISSUE/
+ADD_DEPENDENCY/MARK_STALE/NEEDS_HUMAN)
+```
+
+`reconcile` answers a different question than `analyze`: not "is this issue
+ready to run" but "does the epic's backlog, taken as a whole, actually
+reflect the requirements and the repository — and if not, what should
+change?" It never mutates GitHub in this milestone: every patch is a
+proposal for a human to review, annotated with a deterministic
+`auto-safe`/`requires-approval` classification that a future `apply-safe`
+mode will act on. A second `reconcile` run over an unchanged epic downgrades
+previously-proposed enrichments to `KEEP` rather than re-proposing them.
+
+Requirement documents are resolved with the same precedence as model
+overrides elsewhere: `--requirements <path>` (repeatable; a file or a
+directory of top-level `*.md` files) overrides
+`reconciliation.requirementsPaths` in `.pi/autopilot.yaml`; with neither
+set, `requirements.md` at the repository root is used if present, otherwise
+reconciliation proceeds with no requirement documents. An explicitly
+configured or requested path that does not exist is a preflight error —
+`reconcile` never silently reconciles with absent context it was told to
+use.
+
+See `docs/superpowers/specs/2026-08-22-backlog-reconciliation-design.md`
+for the full design.
+
 ## CLI commands and exit codes
 
 ```text
@@ -110,6 +143,7 @@ autopilot check <issue>            # read-only readiness assessment
 autopilot prepare <issue>          # draft + approve a managed issue update
 autopilot run <issue>              # execute a ready issue end to end (--fresh discards any prior worktree/run and restarts)
 autopilot analyze <ref>            # assess backlog readiness across an epic or explicit issue set (read-only)
+autopilot reconcile <epic>         # propose a backlog patch plan against requirement docs (read-only, always dry-run)
 autopilot status <run-id>          # current stage + next valid action
 autopilot inspect <run-id>         # snapshot, evidence, model usage, history
 autopilot resume <run-id>          # fresh correction attempt for a BLOCKED or FAILED run
@@ -135,6 +169,7 @@ the refiner session timeout (falling back to the repository policy's
 | `prepare` | always (declined/applied/`--json` preview) | thrown error, or the issue changed during analysis | — |
 | `run` | `PR_OPEN` | thrown error | `NEEDS_REFINEMENT` or `BLOCKED` |
 | `analyze` | executable work exists and no needs-refinement (or `--min-ready` satisfied) | argument/infrastructure error | zero executable work, any needs-refinement, or `--min-ready` unsatisfied |
+| `reconcile` | report generated | thrown error (invalid ref, missing `--requirements` path, etc.) | — |
 | `resume` | `PR_OPEN` | thrown error (including "not BLOCKED or FAILED") | `NEEDS_REFINEMENT` or `BLOCKED` |
 | `status` | run found | run not found, or thrown error | — |
 | `inspect` | run found | run not found, or thrown error | — |
@@ -193,15 +228,18 @@ it is a complete, schema-valid policy with a comment above every field.
 | `commands` | `setup` | Commands run once, in order, before implementation. |
 | | `verify` | Commands run after every implementation attempt; **required**, at least one. |
 | `agents` | `refiner`/`implementer`/`reviewer` | Optional `{ model, thinking }` per role. Omitted roles fall through the precedence chain above. |
+| | `reconciler` | Same shape as `refiner`/`implementer`/`reviewer` — optional `{ model, thinking }` for the reconciler role. |
 | `agentPolicy` | `allowedCommands` | Bare executable names an implementer session's `bash` tool may invoke. Dangerous/dispatcher commands (`git push`, `gh`, `rm`, shells, etc.) are always denied regardless of this list. |
 | | `protectedPaths` | Paths, relative to the worktree, no tool call may read, write, or otherwise touch. |
 | | `allowNetwork` | Reserved; M1 has no network-allowlisting mechanism yet. |
 | `budgets` | `refiner.timeoutMinutes` | Per-session timeout for a refiner session (`check`/`prepare`). Default 5 minutes. |
 | | `implementation.timeoutMinutes`/`maxAttempts` | Per-session timeout and max implementer attempts before `BLOCKED`. |
 | | `review.timeoutMinutes`/`maxCorrectionCycles` | Per-session timeout and max `CHANGES_REQUESTED` correction cycles before `BLOCKED`. |
+| | `reconciler.timeoutMinutes` | Per-session timeout for a reconciler session (`reconcile`). Default 10 minutes. |
 | `publication` | `draftPr` | Open the PR as a draft. |
 | | `issueComment` | Only `concise` is supported in M1. |
 | | `autoMerge` | Reserved; M1 never merges regardless of this value. |
+| `reconciliation` | `requirementsPaths` | Files or directories (repository-relative) to read as requirement/architecture context for `reconcile`. Omitted → `requirements.md` at the repository root if present, else none. An explicit empty list (`[]`) means "no requirement documents," and is preserved as such. |
 
 ## Data, artifact location, and redaction
 

@@ -92,28 +92,31 @@ export function renderRefinementSection(draft: TaskDraft): string {
 }
 
 /**
- * Insert or replace the single managed refinement section in an issue body.
- * Original content is always preserved. Ambiguous marker layouts (duplicate
- * or unbalanced markers) raise {@link RefinementSectionError} instead of
- * guessing. Accepts either a {@link TaskDraft} or the strict
- * {@link TaskSnapshot} subtype.
+ * Generic managed-section upsert: insert or replace the single section
+ * delimited by `startMarker`/`endMarker` in `body`, preserving all other
+ * content. Ambiguous marker layouts (duplicate or unbalanced markers) raise
+ * {@link RefinementSectionError} instead of guessing. Shared by every
+ * autopilot-owned managed section — the M1 execution contract here, and the
+ * reconciliation section in src/reconciliation/managed-section.ts — so the
+ * "never guess" marker-scanning rules live exactly once.
  */
-export function upsertRefinementSection(
+export function upsertManagedSection(
   body: string,
-  draft: TaskDraft,
+  startMarker: string,
+  endMarker: string,
+  rendered: string,
 ): string {
-  const rendered = renderRefinementSection(draft);
-  const startCount = countOccurrences(body, REFINEMENT_START);
-  const endCount = countOccurrences(body, REFINEMENT_END);
+  const startCount = countOccurrences(body, startMarker);
+  const endCount = countOccurrences(body, endMarker);
 
   if (startCount > 1 || endCount > 1) {
     throw new RefinementSectionError(
-      "issue body contains multiple autopilot-refinement markers; refusing to guess which section to replace",
+      "issue body contains multiple managed-section markers; refusing to guess which section to replace",
     );
   }
   if (startCount !== endCount) {
     throw new RefinementSectionError(
-      "issue body contains unbalanced autopilot-refinement markers; refusing to guess",
+      "issue body contains unbalanced managed-section markers; refusing to guess",
     );
   }
   if (startCount === 0) {
@@ -121,19 +124,33 @@ export function upsertRefinementSection(
     return `${body}${separator}${rendered}`;
   }
 
-  const startIndex = body.indexOf(REFINEMENT_START);
-  const endIndex = body.indexOf(
-    REFINEMENT_END,
-    startIndex + REFINEMENT_START.length,
-  );
+  const startIndex = body.indexOf(startMarker);
+  const endIndex = body.indexOf(endMarker, startIndex + startMarker.length);
   if (endIndex === -1) {
     throw new RefinementSectionError(
-      "autopilot-refinement end marker appears before the start marker; refusing to guess",
+      "managed-section end marker appears before the start marker; refusing to guess",
     );
   }
   const before = body.slice(0, startIndex);
-  const after = body.slice(endIndex + REFINEMENT_END.length);
+  const after = body.slice(endIndex + endMarker.length);
   return `${before}${rendered}${after}`;
+}
+
+/**
+ * Insert or replace the single managed refinement section in an issue body.
+ * Original content is always preserved. Accepts either a {@link TaskDraft}
+ * or the strict {@link TaskSnapshot} subtype.
+ */
+export function upsertRefinementSection(
+  body: string,
+  draft: TaskDraft,
+): string {
+  return upsertManagedSection(
+    body,
+    REFINEMENT_START,
+    REFINEMENT_END,
+    renderRefinementSection(draft),
+  );
 }
 
 /** A single line of an LCS-derived diff. */
