@@ -342,7 +342,7 @@ are reused as-is for rendering the diff shown in the dry-run report.
 
 | Scenario | Behavior |
 |---|---|
-| Malformed/partial `ReconcilerResult` (schema validation fails) | Never thrown away silently and never crashes the command: normalized to one top-level `NEEDS_HUMAN` patch (`issue: null`, `ambiguityType: "MISSING_CONTEXT"`) explaining the parse failure, same "never trust raw LLM output" convention as `ReadinessService`'s refiner normalization |
+| Malformed/partial `ReconcilerResult`, reconciler session timeout, or session crash | `PiRunner.run()` already validates every role's raw output against `ROLE_SCHEMAS[role]` internally and throws `PiRunError` on anything invalid, on a nonzero exit, or on timeout — it never returns unparsed data to the caller. Reconciliation adds no separate handling: the thrown `PiRunError` propagates to the CLI's existing top-level catch, exit 1, exactly like every other role session failure in `check`/`analyze`/`prepare`. There is no seam for the service to intercept malformed output before `PiRunner` throws, so no `NEEDS_HUMAN`-downgrade path exists for this case (unlike the two rows below, which the *service* itself detects and can downgrade). |
 | A child issue ref in the epic checklist can't be fetched | That ref becomes its own `NEEDS_HUMAN` entry; reconciliation continues over the rest of the epic (mirrors `BacklogAnalyst`'s `unresolved` tracking) rather than aborting |
 | A configured/`--requirements` path doesn't exist or isn't readable | CLI preflight error, exit 1, before any Pi session starts — same "refuse to guess" precedent as a missing `.pi/autopilot.yaml` verify command |
 | Reconciler session times out or crashes | Thrown error, exit 1, same handling as `check`/`analyze` session failures |
@@ -352,8 +352,12 @@ are reused as-is for rendering the diff shown in the dry-run report.
 
 At minimum:
 
-- **Contract schema tests** — valid/invalid `ReconcilerResult` parsing;
-  malformed-output → single `NEEDS_HUMAN` normalization.
+- **Contract schema tests** — valid/invalid `ReconcilerResult` and
+  `BacklogPatch` parsing for every patch type.
+- **Reconciler session failure propagation** — a fake `pi.run()` that throws
+  `PiRunError` (malformed output, timeout, or crash) propagates unchanged out
+  of `ReconciliationService.reconcile()` and out of the CLI command (exit 1),
+  proving no swallowed-error path exists.
 - **Coverage computation** — fixed fixture set exercising
   `covered`/`partial`/`missing`/`implemented` classification.
 - **Idempotency** — a second `reconcile` run over an unchanged epic/issue
@@ -425,8 +429,10 @@ Backlog Reconciliation is complete when:
 4. A second `reconcile` run over an unchanged epic produces `KEEP` instead
    of repeating previously-proposed enrichments (idempotency, §7.1).
 5. No GitHub mutation call occurs under any circumstance in this milestone.
-6. Malformed reconciler output degrades to a single `NEEDS_HUMAN` entry,
-   never a crash and never a silently dropped plan.
+6. A reconciler session that produces invalid output, times out, or crashes
+   surfaces as a thrown `PiRunError` (exit 1) — the existing `PiRunner`
+   behavior every other role session already relies on — never a silently
+   fabricated plan.
 7. `--json` emits the full `ReconciliationReport`; the default mode renders
    the human dry-run report in the `extend_requirements.md` example format
    (per-epic KEEP/ENRICH/CREATE/STALE sections + a coverage summary line).
