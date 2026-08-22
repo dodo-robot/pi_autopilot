@@ -72,6 +72,88 @@ const VALID_PAYLOADS = {
     coverage: [],
     patches: [],
   }),
+  "reconciler-mixed": JSON.stringify({
+    coverage: [
+      {
+        requirementId: "REQ-MIX-001",
+        description: "Users can log in via GitHub",
+        epic: 12,
+        issues: [15],
+        status: "covered",
+        evidence: "issue #15 implements the callback",
+      },
+      {
+        requirementId: "REQ-MIX-002",
+        description: "Users can create an account from a GitHub identity",
+        epic: 12,
+        issues: [16],
+        status: "partial",
+        evidence: "issue #16 creates the user row but not the profile",
+      },
+      {
+        requirementId: "REQ-MIX-003",
+        description: "Admins can revoke sessions",
+        epic: 12,
+        issues: [],
+        status: "missing",
+        evidence: "no matching issue",
+      },
+      {
+        requirementId: "REQ-MIX-004",
+        description: "Legacy password login is disabled",
+        epic: 12,
+        issues: [17],
+        status: "implemented",
+        evidence: "already removed in src/auth/legacy.ts",
+      },
+    ],
+    patches: [
+      { type: "KEEP", issue: 15, reason: "correct as-is" },
+      {
+        type: "ENRICH_ISSUE",
+        issue: 16,
+        reason: "missing acceptance criteria",
+        patch: {
+          goal: "Create a user record from a verified GitHub identity",
+          sourceRequirements: ["REQ-MIX-002"],
+          acceptanceCriteria: ["A first login creates exactly one user row"],
+          constraints: [],
+          nonGoals: [],
+          validation: ["npm test -- auth"],
+          relevantAreas: ["src/auth/"],
+        },
+      },
+      {
+        type: "MARK_STALE",
+        issue: 17,
+        reason: "superseded by the SSO gateway rollout",
+      },
+      {
+        type: "NEEDS_HUMAN",
+        issue: null,
+        ambiguityType: "PRODUCT",
+        reason: "unclear whether the legacy password flow should be deleted or archived",
+        questions: ["Should the legacy password login code be deleted or kept archived?"],
+      },
+      {
+        type: "CREATE_ISSUE",
+        epic: 12,
+        reason: "no issue covers admin session revocation",
+        spec: {
+          title: "Admin session revocation endpoint",
+          enrichment: {
+            goal: "Let an admin revoke a user's active sessions",
+            sourceRequirements: ["REQ-MIX-003"],
+            acceptanceCriteria: ["An admin can revoke another user's sessions via the API"],
+            constraints: [],
+            nonGoals: [],
+            validation: ["npm test -- sessions"],
+            relevantAreas: ["src/auth/"],
+          },
+        },
+      },
+    ],
+  }),
 };
 
 function writeResult(payload) {

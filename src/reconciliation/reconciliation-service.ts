@@ -98,7 +98,7 @@ export class ReconciliationService {
       );
     }
 
-    const { issues: epicIssueRefs } = collectEpicIssueRefs(epic.body);
+    const { issues: epicIssueRefs, unresolvedProseLines } = collectEpicIssueRefs(epic.body);
     const uniqueRefs = [...new Set(epicIssueRefs)];
     const { issues, missing } = await resolveIssueSet(
       uniqueRefs,
@@ -107,6 +107,7 @@ export class ReconciliationService {
       repository,
     );
 
+    // priorReport intentionally not wired in this milestone — see design spec §6.1 note; the idempotency guarantee (§7.1) doesn't depend on it, only REQ-ID stability across repeated runs does.
     const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs });
 
     const execution = await this.deps.pi.run({
@@ -134,6 +135,16 @@ export class ReconciliationService {
       ],
     }));
 
+    const proseLinePatches: BacklogPatch[] = unresolvedProseLines.map((lineNumber) => ({
+      type: "NEEDS_HUMAN",
+      issue: null,
+      ambiguityType: "MISSING_CONTEXT",
+      reason: `epic #${epicRef}'s checklist line ${lineNumber} has no issue reference`,
+      questions: [
+        `Line ${lineNumber} of epic #${epicRef}'s checklist doesn't reference a GitHub issue — does it need one created, or should the line be removed/clarified?`,
+      ],
+    }));
+
     const issueLikes: Array<{ number: number; title: string; body: string }> =
       issues.map((issue: GitHubIssue) => ({
         number: issue.number,
@@ -142,7 +153,7 @@ export class ReconciliationService {
       }));
 
     const downgraded = applyIdempotencyDowngrades(
-      [...raw.patches, ...missingPatches],
+      [...raw.patches, ...missingPatches, ...proseLinePatches],
       issueLikes,
     );
 

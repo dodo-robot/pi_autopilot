@@ -18,11 +18,28 @@ const repository = { owner: "acme", repo: "widgets" };
 const epic = issue(12, "Authentication overhaul", "- [ ] #15 OAuth callback");
 const issues = [issue(15, "OAuth callback", "Handle the GitHub OAuth callback")];
 
+const epicWithBody = issue(
+  28,
+  "Dashboard epic",
+  "Ship the dashboard epic with SSO support\n\n- [ ] #101 Build gadget",
+);
+
 describe("buildReconcilerPrompt", () => {
   it("includes the epic number and title", () => {
     const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
     expect(prompt).toContain("#12");
     expect(prompt).toContain("Authentication overhaul");
+  });
+
+  it("includes the epic's state and body", () => {
+    const prompt = buildReconcilerPrompt({
+      repository,
+      epic: epicWithBody,
+      issues,
+      requirementDocs: [],
+    });
+    expect(prompt).toContain("open");
+    expect(prompt).toContain("Ship the dashboard epic with SSO support");
   });
 
   it("includes every issue's number, title, and body", () => {

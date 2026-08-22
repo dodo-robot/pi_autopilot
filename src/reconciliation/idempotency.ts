@@ -4,6 +4,7 @@ import {
   MANAGED_DEPENDENCY_PATTERN,
 } from "../analysis/dependency-markers.js";
 import type { BacklogPatch } from "../domain/reconciliation.js";
+import { RefinementSectionError } from "../readiness/refinement-section.js";
 import { upsertReconciliationSection } from "./managed-section.js";
 
 interface IssueLike {
@@ -39,13 +40,28 @@ export function applyIdempotencyDowngrades(
     if (patch.type === "ENRICH_ISSUE") {
       const current = byNumber.get(patch.issue);
       if (current === undefined) return patch;
-      const proposed = upsertReconciliationSection(current.body, patch.patch);
-      if (proposed === current.body) {
-        return {
-          type: "KEEP",
-          issue: patch.issue,
-          reason: "already reflects the proposed enrichment",
-        };
+      try {
+        const proposed = upsertReconciliationSection(current.body, patch.patch);
+        if (proposed === current.body) {
+          return {
+            type: "KEEP",
+            issue: patch.issue,
+            reason: "already reflects the proposed enrichment",
+          };
+        }
+      } catch (error) {
+        if (error instanceof RefinementSectionError) {
+          return {
+            type: "NEEDS_HUMAN",
+            issue: patch.issue,
+            ambiguityType: "MISSING_CONTEXT",
+            reason: `issue #${patch.issue}'s body has ambiguous managed-section markers, so the proposed enrichment cannot be safely evaluated: ${error.message}`,
+            questions: [
+              `Issue #${patch.issue}'s body has duplicate or unbalanced autopilot managed-section markers — please clean it up manually before this enrichment can be evaluated.`,
+            ],
+          };
+        }
+        throw error;
       }
       return patch;
     }

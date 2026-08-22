@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { BacklogPatch, IssueEnrichment } from "../../../src/domain/reconciliation.js";
 import { applyIdempotencyDowngrades } from "../../../src/reconciliation/idempotency.js";
-import { upsertReconciliationSection } from "../../../src/reconciliation/managed-section.js";
+import {
+  RECONCILIATION_START,
+  upsertReconciliationSection,
+} from "../../../src/reconciliation/managed-section.js";
 
 function enrichment(overrides: Partial<IssueEnrichment> = {}): IssueEnrichment {
   return {
@@ -86,6 +89,25 @@ describe("applyIdempotencyDowngrades", () => {
       { number: 30, title: "Something unrelated", body: "" },
     ]);
     expect(result.type).toBe("CREATE_ISSUE");
+  });
+
+  it("downgrades an ENRICH_ISSUE patch to NEEDS_HUMAN when the issue body has ambiguous managed-section markers, instead of throwing", () => {
+    const ambiguousBody = `${RECONCILIATION_START}\nold\n${RECONCILIATION_START}\nolder`;
+    const patches: BacklogPatch[] = [
+      { type: "ENRICH_ISSUE", issue: 16, reason: "add contract", patch: enrichment() },
+    ];
+
+    const result = applyIdempotencyDowngrades(patches, [
+      { number: 16, title: "Create user from GitHub identity", body: ambiguousBody },
+    ]);
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        type: "NEEDS_HUMAN",
+        issue: 16,
+        ambiguityType: "MISSING_CONTEXT",
+      }),
+    ]);
   });
 
   it("passes KEEP, MARK_STALE, and NEEDS_HUMAN patches through unchanged", () => {

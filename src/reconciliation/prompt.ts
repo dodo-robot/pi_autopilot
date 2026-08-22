@@ -94,7 +94,11 @@ Rules
 Input
 -----
 Repository: ${repository.owner}/${repository.repo}
-Epic: #${epic.number} — ${epic.title}
+Epic: #${epic.number} — ${epic.title} (${epic.state})
+
+Epic body
+---------
+${epic.body.length > 0 ? epic.body : "(empty epic body)"}
 
 Requirement documents
 ----------------------

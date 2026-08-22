@@ -131,17 +131,19 @@ function makeService(pi: ReconcilerRunner, github: GitHubPort = new FakeGitHub()
   const dataDir = mkdtempSync(path.join(tmpdir(), "autopilot-reconcile-"));
   dirs.push(dataDir);
   const paths = appPaths(dataDir);
-  return new ReconciliationService({
+  const artifacts = new ArtifactStore(paths);
+  const service = new ReconciliationService({
     repository,
     config,
     github,
     pi,
-    artifacts: new ArtifactStore(paths),
+    artifacts,
     paths,
     reconcilerModel,
     analysisId: () => "reconcile-test",
     now: () => "2026-08-22T00:00:00Z",
   });
+  return { service, dataDir, paths, artifacts };
 }
 
 afterEach(() => {
@@ -150,7 +152,7 @@ afterEach(() => {
 
 describe("ReconciliationService.reconcile", () => {
   it("produces a coverage map and policy-classified patches from a valid reconciler result", async () => {
-    const service = makeService(
+    const { service } = makeService(
       fakePi({
         coverage: [
           {
@@ -208,7 +210,7 @@ describe("ReconciliationService.reconcile", () => {
   });
 
   it("passes through a NEEDS_HUMAN patch the reconciler raised for an oversized issue, classified requires-approval", async () => {
-    const service = makeService(
+    const { service } = makeService(
       fakePi({
         coverage: [],
         patches: [
@@ -261,7 +263,7 @@ describe("ReconciliationService.reconcile", () => {
       }
     })();
 
-    const service = makeService(
+    const { service } = makeService(
       fakePi({
         coverage: [],
         patches: [
@@ -287,7 +289,7 @@ describe("ReconciliationService.reconcile", () => {
       }
     })();
 
-    const service = makeService(fakePi({ coverage: [], patches: [] }), withMissingRef);
+    const { service } = makeService(fakePi({ coverage: [], patches: [] }), withMissingRef);
     const report = await service.reconcile(12, []);
 
     expect(report.patches).toContainEqual(
@@ -309,14 +311,99 @@ describe("ReconciliationService.reconcile", () => {
         });
       },
     };
-    const service = makeService(failing);
+    const { service } = makeService(failing);
     await expect(service.reconcile(12, [])).rejects.toThrow(PiRunError);
   });
 
   it("never calls a GitHub mutation method", async () => {
     const github = new FakeGitHub();
-    const service = makeService(fakePi({ coverage: [], patches: [] }), github);
+    const { service } = makeService(fakePi({ coverage: [], patches: [] }), github);
     await service.reconcile(12, []);
     expect(github.mutationCalls).toEqual([]);
+  });
+
+  it("produces a NEEDS_HUMAN patch for a prose-only checklist line in the epic body", async () => {
+    const withProseLine = new (class extends FakeGitHub {
+      override async getIssue(number: number): Promise<GitHubIssue> {
+        if (number === 12) {
+          return makeIssue(
+            12,
+            "Authentication overhaul",
+            "- [ ] #15 OAuth callback\n- [ ] #16 Create user from GitHub identity\n- [ ] Some prose-only thing without a ref",
+          );
+        }
+        return super.getIssue(number);
+      }
+    })();
+
+    const { service } = makeService(fakePi({ coverage: [], patches: [] }), withProseLine);
+    const report = await service.reconcile(12, []);
+
+    expect(report.patches).toContainEqual(
+      expect.objectContaining({
+        type: "NEEDS_HUMAN",
+        issue: null,
+        ambiguityType: "MISSING_CONTEXT",
+        reason: expect.stringContaining("checklist line 3"),
+      }),
+    );
+  });
+
+  it("computes summary counts across all four coverage statuses, counting implemented alongside covered", async () => {
+    const { service } = makeService(
+      fakePi({
+        coverage: [
+          {
+            requirementId: "REQ-A-001",
+            description: "requirement one",
+            epic: 12,
+            issues: [15],
+            status: "covered",
+            evidence: "e1",
+          },
+          {
+            requirementId: "REQ-A-002",
+            description: "requirement two",
+            epic: 12,
+            issues: [15],
+            status: "partial",
+            evidence: "e2",
+          },
+          {
+            requirementId: "REQ-A-003",
+            description: "requirement three",
+            epic: 12,
+            issues: [],
+            status: "missing",
+            evidence: "e3",
+          },
+          {
+            requirementId: "REQ-A-004",
+            description: "requirement four",
+            epic: 12,
+            issues: [16],
+            status: "implemented",
+            evidence: "e4",
+          },
+        ],
+        patches: [],
+      }),
+    );
+
+    const report = await service.reconcile(12, []);
+
+    expect(report.summary).toMatchObject({
+      requirementsCovered: 2,
+      requirementsPartial: 1,
+      requirementsMissing: 1,
+      requirementsTotal: 4,
+    });
+  });
+
+  it("persists the report to the artifact store", async () => {
+    const { service, artifacts } = makeService(fakePi({ coverage: [], patches: [] }));
+    const report = await service.reconcile(12, []);
+    const persisted = await artifacts.readJson("reconcile-test", "reconciliation-report.json");
+    expect(persisted).toEqual(report);
   });
 });

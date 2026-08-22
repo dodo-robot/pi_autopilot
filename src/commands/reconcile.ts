@@ -244,8 +244,24 @@ function printHumanReport(
   stdout(`Repository: ${report.repository.owner}/${report.repository.repo}`);
   stdout(`Epic #${report.epicRef}`);
 
+  // An idempotency-downgraded KEEP for an issue that also carries a more
+  // specific (non-KEEP) patch is redundant noise — the more specific patch
+  // already explains the issue's state, and a bare KEEP next to it would
+  // read as a contradiction (e.g. "correct as-is" beside "superseded").
+  const issuesWithMoreSpecificPatch = new Set(
+    report.patches
+      .filter((p) => p.type !== "KEEP" && p.type !== "CREATE_ISSUE")
+      .map((p) => p.issue)
+      .filter((issue): issue is number => issue !== null),
+  );
+
   for (const type of PATCH_ORDER) {
-    const group = report.patches.filter((patch) => patch.type === type);
+    let group = report.patches.filter((patch) => patch.type === type);
+    if (type === "KEEP") {
+      group = group.filter(
+        (patch) => !issuesWithMoreSpecificPatch.has((patch as { issue: number }).issue),
+      );
+    }
     if (group.length === 0) continue;
     stdout("");
     stdout(type);
