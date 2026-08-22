@@ -527,7 +527,7 @@ describe("autopilot prepare", () => {
 
     expect(harness.exitCodes).toEqual([1]);
     expect(harness.stderrLines.join("\n")).toContain(
-      "multiple autopilot-refinement markers",
+      "multiple managed-section markers",
     );
     expect(github.calls.filter((call) => call === "updateIssueBody")).toHaveLength(0);
   });
