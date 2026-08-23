@@ -60,11 +60,61 @@ describe("confirmMenu", () => {
         validation: [],
         relevantAreas: [],
       };
-      // verify that the proposed section is rendered correctly
-      const proposed = renderReconciliationSection(enrichment);
-      expect(proposed).toContain("### Goal");
-      expect(proposed).toContain("Implement new feature");
-      expect(proposed).toContain("- Requirement 1");
+      const patch = {
+        type: "ENRICH_ISSUE",
+        issue: 15,
+        patch: enrichment,
+        reason: "Adding new feature",
+      } as any;
+      const currentBody = "Existing content";
+      const result = renderEnrichPreview(currentBody, patch);
+      expect(result).toContain("---");
+      expect(result).toContain("+++");
+      expect(result).toContain("### Goal");
+      expect(result).toContain("Implement new feature");
+      expect(result).toContain("- Requirement 1");
+    });
+
+    it("includes current body when present in diff", () => {
+      const enrichment = {
+        goal: "New goal",
+        sourceRequirements: [],
+        acceptanceCriteria: [],
+        constraints: [],
+        nonGoals: [],
+        validation: [],
+        relevantAreas: [],
+      };
+      const patch = {
+        type: "ENRICH_ISSUE",
+        issue: 16,
+        patch: enrichment,
+        reason: "Updating goal",
+      } as any;
+      const currentBody = "Old goal was here";
+      const result = renderEnrichPreview(currentBody, patch);
+      expect(result).toContain("Old goal was here");
+    });
+
+    it("handles empty current body", () => {
+      const enrichment = {
+        goal: "New goal",
+        sourceRequirements: [],
+        acceptanceCriteria: [],
+        constraints: [],
+        nonGoals: [],
+        validation: [],
+        relevantAreas: [],
+      };
+      const patch = {
+        type: "ENRICH_ISSUE",
+        issue: 17,
+        patch: enrichment,
+        reason: "Adding goal",
+      } as any;
+      const result = renderEnrichPreview("", patch);
+      expect(result).toContain("### Goal");
+      expect(result).toContain("New goal");
     });
   });
 
