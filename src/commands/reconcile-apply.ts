@@ -165,6 +165,9 @@ function isPartial(report: ApplyReport): boolean {
   return (
     report.summary.failed > 0 ||
     report.summary.skippedUser > 0 ||
+    report.entries.some(
+      (entry) => entry.outcome.status === "skipped" && entry.outcome.skippedBy === "failed-to-fetch",
+    ) ||
     report.aborted === true
   );
 }

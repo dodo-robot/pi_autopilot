@@ -13,6 +13,7 @@ export const ApplyOutcomeSchema = z.discriminatedUnion("status", [
       "idempotent",
       "user",
       "failed-to-fetch",
+      "preview-only",
     ]),
   }),
   z.object({ status: z.literal("failed"), error: z.string() }),

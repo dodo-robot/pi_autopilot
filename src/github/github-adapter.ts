@@ -255,21 +255,24 @@ export class GitHubAdapter implements GitHubPort {
   async findIssueByTitle(title: string): Promise<GitHubIssue | null> {
     const desired = normalizeIssueTitle(title);
     try {
-      const issues = await this.paginate((page) =>
-        this.octokit.rest.issues.listForRepo({
+      let page = 1;
+      for (;;) {
+        const { data } = await this.octokit.rest.issues.listForRepo({
           owner: this.owner,
           repo: this.repo,
           state: "all",
           per_page: PAGE_SIZE,
           page,
-        }),
-      );
-      const match = issues.find(
-        (issue) =>
-          issue.pull_request === undefined &&
-          normalizeIssueTitle(issue.title) === desired,
-      );
-      return match === undefined ? null : mapIssue(match);
+        });
+        const match = data.find(
+          (issue) =>
+            issue.pull_request === undefined &&
+            normalizeIssueTitle(issue.title) === desired,
+        );
+        if (match !== undefined) return mapIssue(match);
+        if (data.length < PAGE_SIZE) return null;
+        page += 1;
+      }
     } catch (error) {
       throw new GitHubError(`failed to find issue titled ${JSON.stringify(title)}`, {
         cause: error,

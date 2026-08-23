@@ -480,7 +480,8 @@ describe("ApplyService.apply", () => {
     });
 
     expect(result.summary.previewed).toBe(1);
-    expect(result.summary.skippedUser).toBe(1);
+    expect(result.summary.skippedUser).toBe(0);
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "preview-only" });
     expect(previews[0]).toContain("Add OAuth refresh");
     expect(github.updated).toHaveLength(0);
   });

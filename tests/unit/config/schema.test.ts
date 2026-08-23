@@ -30,6 +30,12 @@ describe("AutopilotConfigSchema", () => {
     });
     expect(negative.reconciliation.reportStaleAfterHours).toBe(-1);
 
+    const disabled = AutopilotConfigSchema.parse({
+      ...base,
+      reconciliation: { reportStaleAfterHours: null },
+    });
+    expect(disabled.reconciliation.reportStaleAfterHours).toBeNull();
+
     expect(() =>
       AutopilotConfigSchema.parse({
         ...base,

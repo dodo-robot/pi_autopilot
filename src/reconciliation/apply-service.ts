@@ -127,7 +127,7 @@ export class ApplyService {
         recordEntry(
           entries,
           summary,
-          skipEntry(prepared.patch, "user", `${prepared.entryBase.detail}; preview-only`),
+          skipEntry(prepared.patch, "preview-only", `${prepared.entryBase.detail}; preview-only`),
         );
         continue;
       }
@@ -479,7 +479,7 @@ function entryBase(patch: ReconciledPatch, detail: string = patch.reason): Entry
 
 function skipEntry(
   patch: ReconciledPatch,
-  skippedBy: "requires-approval" | "idempotent" | "user" | "failed-to-fetch",
+  skippedBy: "requires-approval" | "idempotent" | "user" | "failed-to-fetch" | "preview-only",
   detail = patch.reason,
 ): ApplyEntry {
   return {

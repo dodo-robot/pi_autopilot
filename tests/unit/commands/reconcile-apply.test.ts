@@ -491,16 +491,52 @@ describe("autopilot reconcile-apply", () => {
     await run(previewCmd.program, ["reconcile-e2e", "--json"]);
 
     const previewReport = parseStdoutReport(previewCmd.stdout);
-    expect(previewCmd.exitCode()).toBe(2);
+    expect(previewCmd.exitCode()).toBe(0);
     expect(previewCmd.stderr).toEqual([]);
     expect(previewGithub.writes).toEqual([]);
     expect(previewReport.summary).toMatchObject({
       applied: 0,
       skippedRequiresApproval: 2,
-      skippedUser: 3,
+      skippedUser: 0,
       failed: 0,
       previewed: 3,
     });
+    expect(
+      previewReport.entries.filter(
+        (entry) => entry.outcome.status === "skipped" && entry.outcome.skippedBy === "preview-only",
+      ),
+    ).toHaveLength(3);
+  });
+
+  it("exits 2 when an auto-safe target issue cannot be fetched", async () => {
+    const fetchFailureReport: ReconciliationReport = {
+      ...APPLY_SAFE_REPORT,
+      analysisId: "reconcile-fetch-failure",
+      patches: [
+        {
+          type: "ENRICH_ISSUE",
+          issue: 15,
+          patch: ENRICHMENT,
+          reason: "needs a managed execution contract",
+          policy: "auto-safe",
+        },
+      ],
+      summary: {
+        ...APPLY_SAFE_REPORT.summary,
+        patchCounts: { ENRICH_ISSUE: 1 },
+      },
+    };
+    const github = new RecordingGitHub([]);
+    const cmd = makeRealApplyCommand(github);
+    await seedStoredReport(cmd.dataDir, fetchFailureReport);
+
+    await run(cmd.program, ["reconcile-fetch-failure", "--yes", "--json"]);
+
+    const report = parseStdoutReport(cmd.stdout);
+    expect(cmd.exitCode()).toBe(2);
+    expect(cmd.stderr).toEqual([]);
+    expect(github.writes).toEqual([]);
+    expect(report.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "failed-to-fetch" });
   });
 
   it("redacts secret-shaped issue-body values from real apply previews and JSON output", async () => {

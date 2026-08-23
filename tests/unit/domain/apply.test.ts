@@ -46,6 +46,13 @@ describe("ApplyReportSchema", () => {
           detail: "declined",
           declineReason: "not worth the churn",
         },
+        {
+          patchType: "ADD_DEPENDENCY",
+          targetIssue: 19,
+          policy: "auto-safe",
+          outcome: { status: "skipped", skippedBy: "preview-only" },
+          detail: "previewed without writing",
+        },
       ],
       summary: {
         applied: 1,
@@ -58,7 +65,7 @@ describe("ApplyReportSchema", () => {
     };
 
     const parsed = ApplyReportSchema.parse(report);
-    expect(parsed.entries).toHaveLength(5);
+    expect(parsed.entries).toHaveLength(6);
     expect(parsed.entries[0]).toMatchObject({
       patchType: "CREATE_ISSUE",
       appliedIssueNumber: 30,

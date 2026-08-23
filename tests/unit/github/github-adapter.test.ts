@@ -161,6 +161,26 @@ describe("GitHubAdapter", () => {
     });
   });
 
+  it("stops paging as soon as an exact normalized issue-title match is found", async () => {
+    const { octokit } = makeOctokit();
+    const fullPage = Array.from({ length: 100 }, (_, index) => ({
+      number: index + 1,
+      node_id: `I_${index + 1}`,
+      title: index === 49 ? "Add token refresh" : `Other ${index}`,
+      body: "",
+      updated_at: "2026-08-18T00:00:00Z",
+      state: "open",
+      html_url: `https://github.com/acme/widgets/issues/${index + 1}`,
+    }));
+    octokit.rest.issues.listForRepo.mockResolvedValue({ data: fullPage });
+    const { github } = await makeAdapter(octokit);
+
+    await expect(github.findIssueByTitle(" add TOKEN refresh ")).resolves.toMatchObject({
+      number: 50,
+    });
+    expect(octokit.rest.issues.listForRepo).toHaveBeenCalledTimes(1);
+  });
+
   it("returns null when no issue title matches", async () => {
     const { octokit } = makeOctokit();
     octokit.rest.issues.listForRepo.mockResolvedValue({ data: [] });
