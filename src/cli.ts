@@ -30,6 +30,8 @@ import type { StartCommandDeps } from "./commands/start.js";
 import { registerStartCommand } from "./commands/start.js";
 import type { StopCommandDeps } from "./commands/stop.js";
 import { registerStopCommand } from "./commands/stop.js";
+import type { QueueCommandDeps } from "./commands/queue.js";
+import { registerQueueCommand } from "./commands/queue.js";
 
 export type CliDeps = CheckCommandDeps &
   PrepareCommandDeps &
@@ -42,6 +44,7 @@ export type CliDeps = CheckCommandDeps &
   AbandonCommandDeps &
   StartCommandDeps &
   StopCommandDeps &
+  QueueCommandDeps &
   ReconcileCommandDeps &
   ReconcileApplyCommandDeps &
   BootstrapCommandDeps;
@@ -70,6 +73,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
   registerAbandonCommand(program, deps);
   registerStartCommand(program, deps);
   registerStopCommand(program, deps);
+  registerQueueCommand(program, deps);
   return program;
 }
 
