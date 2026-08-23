@@ -76,6 +76,10 @@ async function main(): Promise<void> {
       pidFile,
       queueStore,
       logFile,
+      github: {
+        addLabel: (number, name) => github.addLabel(number, name),
+        removeLabel: (number, name) => github.removeLabel(number, name),
+      },
       runService: {
         start: (issueNumber, overrides) => runService.start(issueNumber, overrides),
         resume: (runId, overrides) => runService.resume(runId, overrides),

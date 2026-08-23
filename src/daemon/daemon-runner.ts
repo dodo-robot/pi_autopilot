@@ -2,11 +2,16 @@ import type { RunOverrides, RunSummary } from "../workflow/run-service.js";
 import type { PidFile } from "./pid-file.js";
 import type { QueueStore, CompletedRun } from "./queue-store.js";
 import type { LogFile } from "./log-file.js";
+import { AGENT_READY_LABEL, AGENT_IN_PROGRESS_LABEL } from "../analysis/label-reconciliation.js";
 
 export interface DaemonRunnerDeps {
   pidFile: Pick<PidFile, "writePid" | "delete">;
   queueStore: Pick<QueueStore, "read" | "write">;
   logFile: Pick<LogFile, "info" | "error">;
+  github: {
+    addLabel(number: number, name: string): Promise<void>;
+    removeLabel(number: number, name: string): Promise<void>;
+  };
   runService: {
     start(issueNumber: number, overrides: RunOverrides): Promise<RunSummary>;
     resume(runId: string, overrides: RunOverrides): Promise<RunSummary>;
@@ -30,6 +35,33 @@ export class DaemonRunner {
 
   constructor(deps: DaemonRunnerDeps) {
     this.deps = deps;
+  }
+
+  private async claim(issueNumber: number): Promise<void> {
+    try {
+      await this.deps.github.removeLabel(issueNumber, AGENT_READY_LABEL);
+      await this.deps.github.addLabel(issueNumber, AGENT_IN_PROGRESS_LABEL);
+    } catch (err) {
+      this.deps.logFile.error(
+        `claim label update failed for issue=${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private async release(issueNumber: number, stage: string): Promise<void> {
+    try {
+      if (stage === "PR_OPEN") {
+        await this.deps.github.removeLabel(issueNumber, AGENT_IN_PROGRESS_LABEL);
+      } else if (stage === "NEEDS_REFINEMENT") {
+        await this.deps.github.removeLabel(issueNumber, AGENT_IN_PROGRESS_LABEL);
+        await this.deps.github.removeLabel(issueNumber, AGENT_READY_LABEL);
+      }
+      // BLOCKED / FAILED: no-op — agent:in-progress stays as a "needs a human" signal.
+    } catch (err) {
+      this.deps.logFile.error(
+        `release label update failed for issue=${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   async run(): Promise<void> {
@@ -89,6 +121,8 @@ export class DaemonRunner {
       const issueNumber = queue.issues[queue.currentIndex]!;
       logFile.info(`starting run issue=${issueNumber}`);
 
+      await this.claim(issueNumber);
+
       let summary: RunSummary;
       try {
         summary = await runService.start(issueNumber, overrides);
@@ -105,6 +139,8 @@ export class DaemonRunner {
           reason: err instanceof Error ? err.message : String(err),
         };
       }
+
+      await this.release(issueNumber, summary.stage);
 
       logFile.info(`run complete issue=${issueNumber} outcome=${summary.stage}`);
 

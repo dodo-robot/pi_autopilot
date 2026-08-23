@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DaemonRunner } from "../../../src/daemon/daemon-runner.js";
 import type { DaemonRunnerDeps } from "../../../src/daemon/daemon-runner.js";
+import { AGENT_READY_LABEL, AGENT_IN_PROGRESS_LABEL } from "../../../src/analysis/label-reconciliation.js";
 
 function makeDeps(overrides: Partial<DaemonRunnerDeps> = {}): DaemonRunnerDeps {
   return {
@@ -21,6 +22,10 @@ function makeDeps(overrides: Partial<DaemonRunnerDeps> = {}): DaemonRunnerDeps {
     logFile: {
       info: vi.fn(),
       error: vi.fn(),
+    } as any,
+    github: {
+      addLabel: vi.fn(),
+      removeLabel: vi.fn(),
     } as any,
     runService: {
       start: vi.fn().mockResolvedValue({
@@ -144,5 +149,138 @@ describe("DaemonRunner", () => {
     expect(deps.runStore.transition).toHaveBeenCalled();
     // queue still runs
     expect(deps.runService.start).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("DaemonRunner claim/release labels", () => {
+  it("claims (removes agent:ready, adds agent:in-progress) before starting a run", async () => {
+    const deps = makeDeps();
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "PR_OPEN", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.github.removeLabel).toHaveBeenCalledWith(28, AGENT_READY_LABEL);
+    expect(deps.github.addLabel).toHaveBeenCalledWith(28, AGENT_IN_PROGRESS_LABEL);
+    // Claim must happen before runService.start is called
+    const removeOrder = (deps.github.removeLabel as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+    const startOrder = (deps.runService.start as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]!;
+    expect(removeOrder).toBeLessThan(startOrder);
+  });
+
+  it("releases agent:in-progress only, on PR_OPEN", async () => {
+    const deps = makeDeps();
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "PR_OPEN", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+
+    await new DaemonRunner(deps).run();
+
+    // Called once for the claim's remove(agent:ready), then once more for release's remove(agent:in-progress)
+    expect(deps.github.removeLabel).toHaveBeenCalledWith(28, AGENT_IN_PROGRESS_LABEL);
+    expect(deps.github.removeLabel).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves agent:in-progress in place on BLOCKED", async () => {
+    const deps = makeDeps();
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "BLOCKED", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+
+    await new DaemonRunner(deps).run();
+
+    // Only the claim's removeLabel(agent:ready) call — no release removeLabel(agent:in-progress)
+    expect(deps.github.removeLabel).toHaveBeenCalledTimes(1);
+    expect(deps.github.removeLabel).toHaveBeenCalledWith(28, AGENT_READY_LABEL);
+  });
+
+  it("leaves agent:in-progress in place on FAILED", async () => {
+    const deps = makeDeps();
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "FAILED", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.github.removeLabel).toHaveBeenCalledTimes(1);
+    expect(deps.github.removeLabel).toHaveBeenCalledWith(28, AGENT_READY_LABEL);
+  });
+
+  it("removes both labels on NEEDS_REFINEMENT", async () => {
+    const deps = makeDeps();
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "NEEDS_REFINEMENT", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+
+    await new DaemonRunner(deps).run();
+
+    // Claim removes agent:ready (1), release removes agent:in-progress then agent:ready (2 more) = 3 total
+    expect(deps.github.removeLabel).toHaveBeenCalledWith(28, AGENT_READY_LABEL);
+    expect(deps.github.removeLabel).toHaveBeenCalledWith(28, AGENT_IN_PROGRESS_LABEL);
+    expect(deps.github.removeLabel).toHaveBeenCalledTimes(3);
+  });
+
+  it("never blocks the run when the claim label write throws", async () => {
+    const deps = makeDeps();
+    (deps.github.removeLabel as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("rate limited"));
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "PR_OPEN", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.runService.start).toHaveBeenCalledTimes(1);
+    expect(deps.logFile.error).toHaveBeenCalled();
+  });
+
+  it("never blocks queue advancement when the release label write throws", async () => {
+    const deps = makeDeps();
+    (deps.github.removeLabel as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(undefined) // claim succeeds
+      .mockRejectedValueOnce(new Error("rate limited")); // release fails
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "PR_OPEN", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.queueStore.write).toHaveBeenCalled();
+    expect(deps.pidFile.delete).toHaveBeenCalled();
   });
 });
