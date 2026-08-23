@@ -1,0 +1,474 @@
+import type { BacklogPatchType, PatchPolicy, ReconciledPatch } from "../domain/reconciliation.js";
+import type { ApplyEntry, ApplyReport } from "../domain/apply.js";
+import type { RepositoryRef } from "../domain/contracts.js";
+import type { GitHubIssue, GitHubPort } from "../github/github-adapter.js";
+import type { ArtifactStore } from "../persistence/artifact-store.js";
+import { collectEpicIssueRefs } from "../analysis/issue-set.js";
+import { appendDependencyToBody, bodyAlreadyDependsOn } from "./apply-dependency.js";
+import {
+  confirmMenu,
+  renderCreatePreview,
+  renderDependencyPreview,
+  renderEnrichPreview,
+  type MenuAnswer,
+} from "./apply-preview.js";
+import { renderReconciliationSection, upsertReconciliationSection } from "./managed-section.js";
+import type { ReconciliationReport } from "./reconciliation-service.js";
+import { RefinementSectionError } from "../readiness/refinement-section.js";
+
+export const REPORT_ARTIFACT = "reconciliation-report.json";
+export const APPLY_ARTIFACT = "reconciliation-apply.json";
+
+const DEFAULT_STALE_HOURS = 168;
+
+export interface ApplyOptions {
+  /** Unattended: apply auto-safe patches and skip requires-approval patches. */
+  yes: boolean;
+  /** Bypass the stored-report staleness guard. */
+  force?: boolean;
+  /** Render/apply-decision previews without mutating GitHub. */
+  previewOnly?: boolean;
+}
+
+export interface ApplyServiceDeps {
+  github: GitHubPort;
+  artifacts: ArtifactStore;
+  repository: RepositoryRef;
+  /** Staleness window in hours. Undefined uses 168; null/negative disables it. */
+  reportStaleAfterHours?: number | null;
+  /** Interactive menu. Only consulted when opts.yes and opts.previewOnly are false. */
+  confirmMenu?: (prompt: string) => Promise<MenuAnswer>;
+  /** Receives rendered preview text before a patch is offered or previewed. */
+  onPreview?: (text: string) => void;
+  now?: () => string;
+}
+
+type Decision = "apply" | "skip-user" | "all" | "abort";
+
+type EntryBase = {
+  patchType: BacklogPatchType;
+  targetIssue: number | null;
+  policy: PatchPolicy;
+  detail: string;
+};
+
+type Prepared =
+  | { kind: "skip"; entry: ApplyEntry }
+  | {
+      kind: "write";
+      patch: ReconciledPatch;
+      entryBase: EntryBase;
+      previewText: string;
+      applyFresh: () => Promise<ApplyEntry>;
+    };
+
+export class ApplyService {
+  private readonly now: () => string;
+  private readonly confirm: (prompt: string) => Promise<MenuAnswer>;
+  private readonly onPreview: (text: string) => void;
+
+  constructor(private readonly deps: ApplyServiceDeps) {
+    this.now = deps.now ?? (() => new Date().toISOString());
+    this.confirm = deps.confirmMenu ?? ((prompt: string) => confirmMenu(prompt));
+    this.onPreview = deps.onPreview ?? (() => {});
+  }
+
+  async apply(analysisId: string, opts: ApplyOptions): Promise<ApplyReport> {
+    const report = await this.deps.artifacts.readJson<ReconciliationReport>(
+      analysisId,
+      REPORT_ARTIFACT,
+    );
+
+    const staleAgeHours =
+      (Date.parse(this.now()) - Date.parse(report.generatedAt)) / (60 * 60 * 1000);
+    const windowHours = this.stalenessWindowHours();
+    const guardActive = windowHours !== null && windowHours > 0;
+    const stale = guardActive && staleAgeHours > windowHours;
+    if (stale && opts.force !== true) {
+      throw new Error(
+        `stored report for ${analysisId} is ${Math.round(staleAgeHours)}h old ` +
+          `(> ${windowHours}h); re-run reconcile or pass --force`,
+      );
+    }
+
+    const entries: ApplyEntry[] = [];
+    const summary = emptySummary();
+    let allRemaining = false;
+    let aborted = false;
+
+    for (const patch of sortPatches(report.patches)) {
+      if (patch.policy === "requires-approval") {
+        recordEntry(entries, summary, skipEntry(patch, "requires-approval"));
+        continue;
+      }
+
+      let prepared: Prepared;
+      try {
+        prepared = await this.prepare(patch);
+      } catch (error) {
+        recordEntry(entries, summary, failedEntry(patch, error));
+        continue;
+      }
+
+      if (prepared.kind === "skip") {
+        recordEntry(entries, summary, prepared.entry);
+        continue;
+      }
+
+      if (opts.previewOnly === true) {
+        this.onPreview(prepared.previewText);
+        summary.previewed += 1;
+        recordEntry(
+          entries,
+          summary,
+          skipEntry(prepared.patch, "user", `${prepared.entryBase.detail}; preview-only`),
+        );
+        continue;
+      }
+
+      let decision: Decision;
+      if (opts.yes || allRemaining) {
+        decision = "apply";
+      } else {
+        this.onPreview(prepared.previewText);
+        summary.previewed += 1;
+        const answer = await this.confirm(this.promptLabel(prepared.patch));
+        decision =
+          answer === "apply"
+            ? "apply"
+            : answer === "skip"
+              ? "skip-user"
+              : answer === "all"
+                ? "all"
+                : "abort";
+      }
+
+      if (decision === "abort") {
+        aborted = true;
+        break;
+      }
+      if (decision === "skip-user") {
+        recordEntry(entries, summary, skipEntry(prepared.patch, "user"));
+        continue;
+      }
+      if (decision === "all") {
+        allRemaining = true;
+      }
+
+      recordEntry(entries, summary, await this.write(prepared));
+    }
+
+    const result: ApplyReport = {
+      repository: this.deps.repository,
+      analysisId,
+      appliedAt: this.now(),
+      aborted,
+      staleness: {
+        staleAgeHours,
+        guardApplied: guardActive,
+        overriddenByForce: stale && opts.force === true,
+      },
+      entries,
+      summary,
+    };
+
+    await this.deps.artifacts.writeJson(analysisId, APPLY_ARTIFACT, result);
+    return result;
+  }
+
+  private stalenessWindowHours(): number | null {
+    const value = this.deps.reportStaleAfterHours;
+    if (value === undefined) return DEFAULT_STALE_HOURS;
+    if (value === null || value < 0) return null;
+    return value;
+  }
+
+  private promptLabel(patch: ReconciledPatch): string {
+    const target = "issue" in patch && patch.issue !== null ? ` #${patch.issue}` : "";
+    return `apply ${patch.type}${target}? [y] apply / [n] skip / [a] all / [q] abort `;
+  }
+
+  private async prepare(patch: ReconciledPatch): Promise<Prepared> {
+    switch (patch.type) {
+      case "CREATE_ISSUE":
+        return this.prepareCreate(patch);
+      case "ENRICH_ISSUE":
+        return this.prepareEnrich(patch);
+      case "ADD_DEPENDENCY":
+        return this.prepareDependency(patch);
+      case "KEEP":
+      case "MARK_STALE":
+      case "NEEDS_HUMAN":
+        return { kind: "skip", entry: skipEntry(patch, "requires-approval") };
+    }
+  }
+
+  private async prepareCreate(
+    patch: Extract<ReconciledPatch, { type: "CREATE_ISSUE" }>,
+  ): Promise<Prepared> {
+    const duplicate = await this.findExistingEpicIssueWithTitle(patch.epic, patch.spec.title);
+    if (duplicate !== null) {
+      return {
+        kind: "skip",
+        entry: skipEntry(patch, "idempotent", `already exists as #${duplicate}`),
+      };
+    }
+
+    return {
+      kind: "write",
+      patch,
+      entryBase: entryBase(patch, `create issue "${patch.spec.title}"`),
+      previewText: renderCreatePreview(patch),
+      applyFresh: () => this.applyCreateFresh(patch),
+    };
+  }
+
+  private async prepareEnrich(
+    patch: Extract<ReconciledPatch, { type: "ENRICH_ISSUE" }>,
+  ): Promise<Prepared> {
+    const current = await this.getIssueOrSkipped(patch);
+    if (isApplyEntry(current)) return { kind: "skip", entry: current };
+
+    const proposed = this.upsertOrSkip(current.body, patch);
+    if (isApplyEntry(proposed)) return { kind: "skip", entry: proposed };
+    if (proposed === current.body) {
+      return {
+        kind: "skip",
+        entry: skipEntry(patch, "idempotent", "already reflects the proposed enrichment"),
+      };
+    }
+
+    return {
+      kind: "write",
+      patch,
+      entryBase: entryBase(patch, `enrich issue #${patch.issue}`),
+      previewText: renderEnrichPreview(current.body, patch),
+      applyFresh: () => this.applyEnrichFresh(patch),
+    };
+  }
+
+  private async prepareDependency(
+    patch: Extract<ReconciledPatch, { type: "ADD_DEPENDENCY" }>,
+  ): Promise<Prepared> {
+    const current = await this.getIssueOrSkipped(patch);
+    if (isApplyEntry(current)) return { kind: "skip", entry: current };
+
+    if (bodyAlreadyDependsOn(current.body, patch.dependsOn)) {
+      return {
+        kind: "skip",
+        entry: skipEntry(patch, "idempotent", `already depends on #${patch.dependsOn}`),
+      };
+    }
+
+    return {
+      kind: "write",
+      patch,
+      entryBase: entryBase(patch, `add dependency #${patch.dependsOn} to #${patch.issue}`),
+      previewText: renderDependencyPreview(current.body, patch.dependsOn),
+      applyFresh: () => this.applyDependencyFresh(patch),
+    };
+  }
+
+  private async getIssueOrSkipped(
+    patch: Extract<ReconciledPatch, { type: "ENRICH_ISSUE" | "ADD_DEPENDENCY" }>,
+  ): Promise<GitHubIssue | ApplyEntry> {
+    try {
+      return await this.deps.github.getIssue(patch.issue);
+    } catch (error) {
+      return skipEntry(
+        patch,
+        "failed-to-fetch",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  private upsertOrSkip(
+    body: string,
+    patch: Extract<ReconciledPatch, { type: "ENRICH_ISSUE" }>,
+  ): string | ApplyEntry {
+    try {
+      return upsertReconciliationSection(body, patch.patch);
+    } catch (error) {
+      if (error instanceof RefinementSectionError) {
+        return skipEntry(
+          patch,
+          "idempotent",
+          `body has ambiguous managed-section markers: ${error.message}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async write(prepared: Extract<Prepared, { kind: "write" }>): Promise<ApplyEntry> {
+    try {
+      return await prepared.applyFresh();
+    } catch (error) {
+      return {
+        ...prepared.entryBase,
+        outcome: {
+          status: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
+  private async applyCreateFresh(
+    patch: Extract<ReconciledPatch, { type: "CREATE_ISSUE" }>,
+  ): Promise<ApplyEntry> {
+    const duplicate = await this.findExistingEpicIssueWithTitle(patch.epic, patch.spec.title);
+    if (duplicate !== null) {
+      return skipEntry(patch, "idempotent", `already exists as #${duplicate}`);
+    }
+
+    const created = await this.deps.github.createIssue({
+      title: patch.spec.title,
+      body: renderReconciliationSection(patch.spec.enrichment),
+      labels: ["task"],
+    });
+
+    if (patch.epic !== null) {
+      const epic = await this.deps.github.getIssue(patch.epic);
+      if (!collectEpicIssueRefs(epic.body).issues.includes(created.number)) {
+        const separator = epic.body.endsWith("\n") || epic.body.length === 0 ? "" : "\n";
+        await this.deps.github.updateIssueBody(
+          patch.epic,
+          `${epic.body}${separator}- [ ] #${created.number} ${created.title}`,
+        );
+      }
+    }
+
+    return {
+      ...entryBase(patch, `created #${created.number} "${created.title}"`),
+      outcome: { status: "applied" },
+      appliedIssueNumber: created.number,
+    };
+  }
+
+  private async applyEnrichFresh(
+    patch: Extract<ReconciledPatch, { type: "ENRICH_ISSUE" }>,
+  ): Promise<ApplyEntry> {
+    const current = await this.deps.github.getIssue(patch.issue);
+    const proposed = this.upsertOrSkip(current.body, patch);
+    if (isApplyEntry(proposed)) return proposed;
+    if (proposed === current.body) {
+      return skipEntry(patch, "idempotent", "already reflects the proposed enrichment");
+    }
+    await this.deps.github.updateIssueBody(patch.issue, proposed);
+    return { ...entryBase(patch, `enriched issue #${patch.issue}`), outcome: { status: "applied" } };
+  }
+
+  private async applyDependencyFresh(
+    patch: Extract<ReconciledPatch, { type: "ADD_DEPENDENCY" }>,
+  ): Promise<ApplyEntry> {
+    const current = await this.deps.github.getIssue(patch.issue);
+    if (bodyAlreadyDependsOn(current.body, patch.dependsOn)) {
+      return skipEntry(patch, "idempotent", `already depends on #${patch.dependsOn}`);
+    }
+    await this.deps.github.updateIssueBody(
+      patch.issue,
+      appendDependencyToBody(current.body, patch.dependsOn),
+    );
+    return {
+      ...entryBase(patch, `added dependency #${patch.dependsOn} to #${patch.issue}`),
+      outcome: { status: "applied" },
+    };
+  }
+
+  private async findExistingEpicIssueWithTitle(
+    epicNumber: number | null,
+    title: string,
+  ): Promise<number | null> {
+    if (epicNumber === null) return null;
+
+    const epic = await this.deps.github.getIssue(epicNumber);
+    const desired = title.trim().toLowerCase();
+    for (const ref of collectEpicIssueRefs(epic.body).issues) {
+      try {
+        const existing = await this.deps.github.getIssue(ref);
+        if (existing.title.trim().toLowerCase() === desired) return ref;
+      } catch {
+        // A stale/broken epic checklist ref must not block create idempotency.
+      }
+    }
+    return null;
+  }
+}
+
+function sortPatches(patches: ReconciledPatch[]): ReconciledPatch[] {
+  const rank: Partial<Record<BacklogPatchType, number>> = {
+    CREATE_ISSUE: 0,
+    ENRICH_ISSUE: 1,
+    ADD_DEPENDENCY: 2,
+  };
+  return [...patches].sort((a, b) => (rank[a.type] ?? 10) - (rank[b.type] ?? 10));
+}
+
+function emptySummary(): ApplyReport["summary"] {
+  return {
+    applied: 0,
+    skippedRequiresApproval: 0,
+    skippedIdempotent: 0,
+    skippedUser: 0,
+    failed: 0,
+    previewed: 0,
+  };
+}
+
+function entryBase(patch: ReconciledPatch, detail: string = patch.reason): EntryBase {
+  return {
+    patchType: patch.type,
+    targetIssue: "issue" in patch ? patch.issue : null,
+    policy: patch.policy,
+    detail,
+  };
+}
+
+function skipEntry(
+  patch: ReconciledPatch,
+  skippedBy: "requires-approval" | "idempotent" | "user" | "failed-to-fetch",
+  detail = patch.reason,
+): ApplyEntry {
+  return {
+    ...entryBase(patch, detail),
+    outcome: { status: "skipped", skippedBy },
+  };
+}
+
+function failedEntry(patch: ReconciledPatch, error: unknown): ApplyEntry {
+  return {
+    ...entryBase(patch),
+    outcome: { status: "failed", error: error instanceof Error ? error.message : String(error) },
+  };
+}
+
+function recordEntry(
+  entries: ApplyEntry[],
+  summary: ApplyReport["summary"],
+  entry: ApplyEntry,
+): void {
+  entries.push(entry);
+  switch (entry.outcome.status) {
+    case "applied":
+      summary.applied += 1;
+      break;
+    case "skipped":
+      if (entry.outcome.skippedBy === "requires-approval") {
+        summary.skippedRequiresApproval += 1;
+      } else if (entry.outcome.skippedBy === "idempotent") {
+        summary.skippedIdempotent += 1;
+      } else if (entry.outcome.skippedBy === "user") {
+        summary.skippedUser += 1;
+      }
+      break;
+    case "failed":
+      summary.failed += 1;
+      break;
+  }
+}
+
+function isApplyEntry(value: GitHubIssue | ApplyEntry | string): value is ApplyEntry {
+  return typeof value === "object" && value !== null && "outcome" in value;
+}
