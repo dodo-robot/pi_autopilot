@@ -102,7 +102,7 @@ Workflow:
 2. Load `autopilot.yaml` if present; fall back to built-in defaults if absent.
 3. Read all requirement documents.
 4. Run the size check (§5). Refuse with split advice if over threshold.
-5. Run a `bootstrapper` Pi session to produce the structured plan.
+5. Run a `bootstrapper` Pi session to produce the structured plan. The session is given the superpowers brainstorming skill and instructed to use it to derive epics and issues from the requirement docs, produce a dependency graph, and propose a vertical slicing of the work (§8.5).
 6. Save `plan.json` and render `bootstrap-plan.md` (§6).
 7. Print the plan-id and the path to `bootstrap-plan.md`.
 
@@ -227,6 +227,10 @@ human-readable Markdown rendering of the full plan:
 
 - Each epic as a `##` section with its description and a numbered list of
   child issue titles and bodies.
+- A `## Dependency Graph` section with a fenced Mermaid `graph TD` block
+  showing directed dependencies between epics and issues.
+- A `## Parallel Tracks` section with a numbered wave table showing which
+  issues can be worked concurrently in each wave.
 - A `## Proposed autopilot.yaml` fenced block (omitted if config already
   exists).
 - A `## Project Board` section showing the board title and columns.
@@ -316,14 +320,14 @@ src/
     bootstrap.ts              # CLI entry point; --plan / --apply dispatch
   bootstrap/
     size-checker.ts           # Token estimation + bin-pack split advisor
-    bootstrapper-prompt.ts    # Pi session prompt for the bootstrapper role
+    bootstrapper-prompt.ts    # Pi session prompt for the bootstrapper role (§8.5)
     bootstrap-service.ts      # Orchestrates --plan: calls Pi, saves artifacts
     apply-service.ts          # Orchestrates --apply: GitHub writes in order
-    plan-renderer.ts          # Renders plan.json → bootstrap-plan.md
+    plan-renderer.ts          # Renders plan.json → bootstrap-plan.md (incl. Mermaid + wave table)
     plan-store.ts             # Read/write plan.json by plan-id (nanoid)
     config-proposer.ts        # Generates starter autopilot.yaml content
   github/
-    projects-adapter.ts       # New: GitHub Projects v2 API (create board, add issues)
+    projects-adapter.ts       # New: GitHub Projects v2 API (create board, add issues) (§8.7)
 ```
 
 ### 8.2 Reused without modification
@@ -343,7 +347,45 @@ existing `reconciler`, `refiner`, `implementer`, `reviewer`, `verifier`. The
 `bootstrap.tokenThreshold` key is added under a new top-level `bootstrap`
 section.
 
-### 8.4 `projects-adapter.ts`
+### 8.5 Bootstrapper Pi session responsibilities
+
+The `bootstrapper` Pi session (prompt defined in `bootstrapper-prompt.ts`) is given the **superpowers brainstorming skill** and instructed to use it to reason about the requirement documents. Its output must include three things:
+
+1. **Epic + issue structure** — LLM-inferred groupings of related requirements into epics, each with child issues. Captured in `plan.json` under `epics`.
+
+2. **Dependency graph** — explicit directed dependencies between issues and epics (e.g. issue B cannot start until issue A is done). Captured in `plan.json` under `dependencies` as a list of `{ from, to, reason }` entries. Rendered in `bootstrap-plan.md` as a fenced Mermaid `graph TD` block for human review.
+
+3. **Vertical slicing and parallel tracks** — a proposed execution ordering that groups independent issues into parallel tracks, so multiple layers of the system can be developed concurrently where the dependency graph allows. Captured in `plan.json` under `tracks` as an ordered list of parallel groups (each group is a set of issue references that can be worked simultaneously). Rendered in `bootstrap-plan.md` as a numbered wave table:
+
+   ```
+   Wave 1 (parallel): #1 Setup CI, #2 Database schema
+   Wave 2 (parallel): #3 Auth service, #4 API layer
+   Wave 3 (sequential): #5 Integration tests
+   ```
+
+The bootstrapper is the only Pi role responsible for this reasoning. `apply-service.ts` persists the dependency and track data to GitHub (as issue body sections) when writing issues, but does not recompute it.
+
+### 8.6 `plan.json` additions for dependency graph and tracks
+
+The `plan.json` schema gains two top-level fields alongside `epics`:
+
+```json
+{
+  "dependencies": [
+    { "from": "epic:Authentication", "to": "epic:API Layer", "reason": "API auth middleware depends on auth service" },
+    { "from": "issue:Implement JWT login", "to": "issue:Add OAuth2 provider", "reason": "OAuth builds on the JWT session model" }
+  ],
+  "tracks": [
+    { "wave": 1, "issues": ["Setup CI", "Database schema"] },
+    { "wave": 2, "issues": ["Auth service", "API layer"] },
+    { "wave": 3, "issues": ["Integration tests"] }
+  ]
+}
+```
+
+References in `dependencies` and `tracks` use the issue/epic title as a stable key at plan time; `apply-service.ts` substitutes real GitHub issue numbers after creation.
+
+### 8.7 `projects-adapter.ts`
 
 Wraps the GitHub Projects v2 GraphQL API. Exposes:
 - `listBoards()` — list existing Projects v2 boards for the repo owner.
@@ -358,7 +400,8 @@ by `GitHubAdapter` throughout the codebase), so tests can substitute a fake.
 ## 9. Testing
 
 - **Unit tests** for `size-checker.ts` (threshold logic, bin-pack heuristic),
-  `plan-store.ts` (round-trip JSON), `plan-renderer.ts` (Markdown output),
+  `plan-store.ts` (round-trip JSON including `dependencies` and `tracks` fields),
+  `plan-renderer.ts` (Markdown output including Mermaid graph and wave table),
   `config-proposer.ts` (output shape).
 - **Unit tests** for `bootstrap-service.ts` and `apply-service.ts` with fake
   `PiRunner`, fake `GitHubAdapter`, fake `ProjectsAdapter` (same pattern as
