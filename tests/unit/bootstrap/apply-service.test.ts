@@ -77,7 +77,7 @@ class FakeProjects implements ProjectsPort {
     this.boards.push(board);
     return board;
   }
-  async addIssueToBoard(boardId: string, issueNodeId: string): Promise<void> {
+  async addIssueToBoard(boardId: string, issueNodeId: string, _status: string): Promise<void> {
     this.addedItems.push({ boardId, nodeId: issueNodeId });
   }
 }
