@@ -65,6 +65,9 @@ export interface GitHubPort {
     labels: string[];
   }): Promise<GitHubIssue>;
   ensureLabel(name: string, color: string): Promise<void>;
+  listLabels(number: number): Promise<string[]>;
+  addLabel(number: number, name: string): Promise<void>;
+  removeLabel(number: number, name: string): Promise<void>;
 }
 
 /** Minimal structural surface of Octokit used by the adapter. */
@@ -142,6 +145,23 @@ export interface OctokitLike {
         repo: string;
         name: string;
         color: string;
+      }): Promise<{ data: unknown }>;
+      listLabelsOnIssue(params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+      }): Promise<{ data: Array<{ name?: string } | string> }>;
+      addLabels(params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        labels: string[];
+      }): Promise<{ data: unknown }>;
+      removeLabel(params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        name: string;
       }): Promise<{ data: unknown }>;
     };
     pulls: {
@@ -416,6 +436,47 @@ export class GitHubAdapter implements GitHubPort {
       } catch {
         // Already exists from a concurrent call
       }
+    }
+  }
+
+  async listLabels(number: number): Promise<string[]> {
+    try {
+      const { data } = await this.octokit.rest.issues.listLabelsOnIssue({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: number,
+      });
+      return data.map((l) => (typeof l === "string" ? l : (l.name ?? "")));
+    } catch (error) {
+      throw new GitHubError(`failed to list labels for issue #${number}`, { cause: error });
+    }
+  }
+
+  async addLabel(number: number, name: string): Promise<void> {
+    try {
+      await this.octokit.rest.issues.addLabels({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: number,
+        labels: [name],
+      });
+    } catch (error) {
+      throw new GitHubError(`failed to add label "${name}" to issue #${number}`, { cause: error });
+    }
+  }
+
+  async removeLabel(number: number, name: string): Promise<void> {
+    try {
+      await this.octokit.rest.issues.removeLabel({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: number,
+        name,
+      });
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      if (status === 404) return;
+      throw new GitHubError(`failed to remove label "${name}" from issue #${number}`, { cause: error });
     }
   }
 

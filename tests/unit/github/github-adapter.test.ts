@@ -82,6 +82,9 @@ function makeOctokit(): {
         listForRepo: vi.fn().mockResolvedValue({ data: [] }),
         listComments: vi.fn(),
         createComment: vi.fn().mockResolvedValue({ data: { id: 11, body: "ok" } }),
+        listLabelsOnIssue: vi.fn().mockResolvedValue({ data: [{ name: "bug" }, { name: "agent:ready" }] }),
+        addLabels: vi.fn().mockResolvedValue({ data: [] }),
+        removeLabel: vi.fn().mockResolvedValue({ data: [] }),
       },
       pulls: {
         list: vi.fn(),
@@ -405,5 +408,72 @@ describe("GitHubAdapter", () => {
     octokit.rest.issues.get.mockRejectedValue(new Error("boom"));
     const { github } = await makeAdapter(octokit);
     await expect(github.getIssue(42)).rejects.toBeInstanceOf(GitHubError);
+  });
+});
+
+describe("GitHubAdapter label methods", () => {
+  async function makeAdapterLabel(
+    octokit: OctokitLike,
+    overrides: Record<string, CannedResult> = {},
+  ): Promise<{ github: GitHubAdapter; runner: FakeRunner }> {
+    const runner = gitRunner(overrides);
+    const github = await GitHubAdapter.create("/tmp/repo", runner, {
+      octokit,
+    });
+    return { github, runner };
+  }
+
+  it("lists labels on an issue", async () => {
+    const { octokit } = makeOctokit();
+    const { github } = await makeAdapterLabel(octokit);
+    const labels = await github.listLabels(42);
+    expect(labels).toEqual(["bug", "agent:ready"]);
+    expect(octokit.rest.issues.listLabelsOnIssue).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "widgets",
+      issue_number: 42,
+    });
+  });
+
+  it("adds a label to an issue", async () => {
+    const { octokit } = makeOctokit();
+    const { github } = await makeAdapterLabel(octokit);
+    await github.addLabel(42, "agent:in-progress");
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "widgets",
+      issue_number: 42,
+      labels: ["agent:in-progress"],
+    });
+  });
+
+  it("removes a label from an issue", async () => {
+    const { octokit } = makeOctokit();
+    const { github } = await makeAdapterLabel(octokit);
+    await github.removeLabel(42, "agent:ready");
+    expect(octokit.rest.issues.removeLabel).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "widgets",
+      issue_number: 42,
+      name: "agent:ready",
+    });
+  });
+
+  it("treats a 404 on remove as success (label already absent)", async () => {
+    const { octokit } = makeOctokit();
+    (octokit.rest.issues.removeLabel as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error("Not Found"), { status: 404 }),
+    );
+    const { github } = await makeAdapterLabel(octokit);
+    await expect(github.removeLabel(42, "agent:ready")).resolves.toBeUndefined();
+  });
+
+  it("wraps a non-404 remove failure in GitHubError", async () => {
+    const { octokit } = makeOctokit();
+    (octokit.rest.issues.removeLabel as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error("rate limited"), { status: 429 }),
+    );
+    const { github } = await makeAdapterLabel(octokit);
+    await expect(github.removeLabel(42, "agent:ready")).rejects.toBeInstanceOf(GitHubError);
   });
 });
