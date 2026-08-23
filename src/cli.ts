@@ -14,6 +14,8 @@ import type { PrepareCommandDeps } from "./commands/prepare.js";
 import { registerPrepareCommand } from "./commands/prepare.js";
 import type { ReconcileCommandDeps } from "./commands/reconcile.js";
 import { registerReconcileCommand } from "./commands/reconcile.js";
+import type { BootstrapCommandDeps } from "./commands/bootstrap.js";
+import { registerBootstrapCommand } from "./commands/bootstrap.js";
 import type { ResumeCommandDeps } from "./commands/resume.js";
 import { registerResumeCommand } from "./commands/resume.js";
 import type { RunCommandDeps } from "./commands/run.js";
@@ -38,7 +40,8 @@ export type CliDeps = CheckCommandDeps &
   AbandonCommandDeps &
   StartCommandDeps &
   StopCommandDeps &
-  ReconcileCommandDeps;
+  ReconcileCommandDeps &
+  BootstrapCommandDeps;
 
 /**
  * Build the autopilot CLI. Dependencies are injectable so command tests can
@@ -54,6 +57,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
   registerPrepareCommand(program, deps);
   registerAnalyzeCommand(program, deps);
   registerReconcileCommand(program, deps);
+  registerBootstrapCommand(program, deps);
   registerRunCommand(program, deps);
   registerRunsCommand(program, deps);
   registerStatusCommand(program, deps);
