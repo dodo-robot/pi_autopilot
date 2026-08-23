@@ -89,23 +89,52 @@ Implementation plan: `docs/superpowers/plans/2026-08-22-backlog-reconciliation.m
 
 ---
 
+## 2026-08-23 — Reconciliation apply-safe mode ✅
+
+**Scope:** `autopilot reconcile-apply <analysisId>` loads a stored
+reconciliation report and applies only deterministic `auto-safe` GitHub
+patches, while keeping ambiguous or policy-sensitive changes human-gated.
+
+- `reconcile-apply` command wired into the CLI with human and `--json`
+  output, `--yes` unattended mode, and `--force` staleness override.
+- `ApplyService` apply pipeline loads durable reconciliation artifacts,
+  partitions auto-safe vs requires-approval patches, revalidates fresh
+  GitHub state before each write, and continues after per-patch failures.
+- Staleness guard defaults to 168 hours and is configurable via
+  `reconciliation.reportStaleAfterHours`; negative values disable it.
+- Non-TTY runs without `--yes` are preview-only and perform zero writes.
+- Auto-safe writes shipped for `CREATE_ISSUE`, `ENRICH_ISSUE`, and
+  `ADD_DEPENDENCY`; `MARK_STALE` and `NEEDS_HUMAN` remain skipped as
+  requires-approval.
+- Each run writes a durable `reconciliation-apply.json` artifact alongside
+  the source analysis artifacts.
+
+Design spec: `docs/superpowers/specs/2026-08-23-reconcile-apply-safe-design.md`
+Implementation plan: `docs/superpowers/plans/2026-08-23-reconcile-apply-safe.md`
+
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and
 `docs/resources/extend_requirements.md` as of 2026-08-22. Grouped by rough
 priority; pick from the top.
 
-### Reconciliation `apply-safe` mode 🔲
+### Reconciliation apply-safe follow-ups 🔲
 
-- **GitHub-mutating apply mode.** `classifyPatch` already computes
-  `auto-safe` / `requires-approval` per patch, but nothing ever applies a
-  patch — `reconcile` is dry-run only. This is the extension doc's own
-  "recommended next step." (extend_requirements.md §"Patch-application
-  policy")
+- **Reconciler steering from apply results.** Declined/skipped apply
+  decisions are recorded, but they do not yet feed the next reconciliation
+  prompt or patch policy.
+- **Apply-all workflow.** Interactive per-patch `all` exists inside one run,
+  but there is no broader apply-all command/workflow for a report set.
 - **Remaining patch types:** `SPLIT_ISSUE`, `MERGE_DUPLICATE`,
   `REMOVE_DEPENDENCY`, `MARK_READY` — documented in
   `src/domain/reconciliation.ts` as a future extension of the
   `BacklogPatch` union. (extend_requirements.md §"Structured patch model")
+- **Label policy on `CREATE_ISSUE`.** Created issues currently use the
+  minimal shipped label behavior; final label taxonomy is still deferred.
+- **Concurrent application.** Apply-safe runs patches sequentially; concurrent
+  application and conflict handling are deferred.
 - **Oversized-task detection driving `SPLIT_ISSUE` proposals.**
   (extend_requirements.md §"Task size and splitting")
 
