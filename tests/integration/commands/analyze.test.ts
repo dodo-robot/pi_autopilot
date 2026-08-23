@@ -140,6 +140,17 @@ class FakeGitHub implements GitHubPort {
     return { ...found, number };
   }
 
+  async findIssueByTitle(title: string): Promise<GitHubIssue | null> {
+    const desired = title.trim().toLowerCase();
+    const source = this as { issues?: Map<number, GitHubIssue>; issue?: GitHubIssue };
+    const issues = source.issues !== undefined
+      ? [...source.issues.values()]
+      : source.issue !== undefined
+        ? [source.issue]
+        : [];
+    return issues.find((issue) => issue.title.trim().toLowerCase() === desired) ?? null;
+  }
+
   async updateIssueBody(): Promise<GitHubIssue> {
     this.mutationCalls.push("updateIssueBody");
     throw new Error("must not be called");

@@ -48,6 +48,8 @@ export interface CreatePullRequestInput {
  */
 export interface GitHubPort {
   getIssue(number: number): Promise<GitHubIssue>;
+  /** Find an issue by exact normalized title, or null when none exists. */
+  findIssueByTitle(title: string): Promise<GitHubIssue | null>;
   updateIssueBody(number: number, body: string): Promise<GitHubIssue>;
   createIssueComment(number: number, body: string): Promise<void>;
   findPullRequestByHead(head: string): Promise<PullRequestRef | null>;
@@ -74,6 +76,7 @@ export interface OctokitIssueData {
   updated_at: string;
   state: string;
   html_url: string;
+  pull_request?: unknown;
 }
 
 export interface OctokitCommentData {
@@ -102,6 +105,13 @@ export interface OctokitLike {
         issue_number: number;
         body: string;
       }): Promise<{ data: OctokitIssueData }>;
+      listForRepo(params: {
+        owner: string;
+        repo: string;
+        state: "open" | "closed" | "all";
+        per_page: number;
+        page: number;
+      }): Promise<{ data: OctokitIssueData[] }>;
       listComments(params: {
         owner: string;
         repo: string;
@@ -186,6 +196,10 @@ function mapPull(data: OctokitPullData): PullRequestRef {
   };
 }
 
+function normalizeIssueTitle(title: string): string {
+  return title.trim().toLowerCase();
+}
+
 /**
  * Authenticated GitHub adapter bound to the repository resolved from the
  * local clone. The token is obtained from `gh auth token`, held only in
@@ -235,6 +249,31 @@ export class GitHubAdapter implements GitHubPort {
       return mapIssue(data);
     } catch (error) {
       throw new GitHubError(`failed to fetch issue #${number}`, { cause: error });
+    }
+  }
+
+  async findIssueByTitle(title: string): Promise<GitHubIssue | null> {
+    const desired = normalizeIssueTitle(title);
+    try {
+      const issues = await this.paginate((page) =>
+        this.octokit.rest.issues.listForRepo({
+          owner: this.owner,
+          repo: this.repo,
+          state: "all",
+          per_page: PAGE_SIZE,
+          page,
+        }),
+      );
+      const match = issues.find(
+        (issue) =>
+          issue.pull_request === undefined &&
+          normalizeIssueTitle(issue.title) === desired,
+      );
+      return match === undefined ? null : mapIssue(match);
+    } catch (error) {
+      throw new GitHubError(`failed to find issue titled ${JSON.stringify(title)}`, {
+        cause: error,
+      });
     }
   }
 

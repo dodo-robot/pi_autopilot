@@ -79,6 +79,11 @@ class FakeGitHub implements GitHubPort {
     return issue;
   }
 
+  async findIssueByTitle(title: string): Promise<GitHubIssue | null> {
+    const desired = title.trim().toLowerCase();
+    return [...this.issues.values()].find((issue) => issue.title.trim().toLowerCase() === desired) ?? null;
+  }
+
   async updateIssueBody(number: number, body: string): Promise<GitHubIssue> {
     this.updated.push({ number, body });
     const issue = this.issues.get(number);
@@ -213,30 +218,22 @@ describe("ApplyService.apply", () => {
     expect(stored).toEqual(result);
   });
 
-  it("links a matching unlinked issue from known report refs instead of creating a duplicate", async () => {
+  it("links a matching unlinked live issue by title instead of creating a duplicate", async () => {
     github.issues.set(12, epic());
     github.issues.set(21, makeIssue(21, "New widget", "Already exists outside the epic"));
-    await artifacts.writeJson(analysisId, "reconciliation-report.json", {
-      ...baseReport([
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
         {
           type: "CREATE_ISSUE",
           epic: 12,
-          spec: { title: "New widget", enrichment: enrichment("Create new widget") },
+          spec: { title: "new widget", enrichment: enrichment("Create new widget") },
           reason: "missing",
           policy: "auto-safe",
         },
       ]),
-      coverage: [
-        {
-          requirementId: "REQ-1",
-          description: "Need a widget",
-          epic: 12,
-          issues: [21],
-          status: "partial",
-          evidence: "Existing unlinked issue",
-        },
-      ],
-    });
+    );
 
     const result = await service().apply(analysisId, opts);
 
@@ -245,6 +242,46 @@ describe("ApplyService.apply", () => {
       { number: 12, body: expect.stringContaining("- [ ] #21 New widget") },
     ]);
     expect(result.summary.applied).toBe(1);
+    expect(result.entries[0]).toMatchObject({
+      detail: "linked existing #21 \"New widget\" to epic #12",
+      appliedIssueNumber: 21,
+      outcome: { status: "applied" },
+    });
+  });
+
+  it("previews a CREATE_ISSUE title match as linkback, not creation, before prompting", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(21, makeIssue(21, "New widget", "Already exists outside the epic"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "CREATE_ISSUE",
+          epic: 12,
+          spec: { title: "New widget", enrichment: enrichment("Create new widget") },
+          reason: "missing",
+          policy: "auto-safe",
+        },
+      ]),
+    );
+    const previews: string[] = [];
+    let prompts = 0;
+
+    const result = await service({
+      onPreview: (text) => previews.push(text),
+      confirmMenu: async () => {
+        prompts += 1;
+        return "apply";
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(prompts).toBe(1);
+    expect(previews).toEqual([
+      "existing issue: #21 New widget\nwill append to epic #12 checklist",
+    ]);
+    expect(previews[0]).not.toContain("title: New widget");
+    expect(github.created).toHaveLength(0);
     expect(result.entries[0]).toMatchObject({
       appliedIssueNumber: 21,
       outcome: { status: "applied" },

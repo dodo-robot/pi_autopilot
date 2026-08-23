@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TaskSnapshot, ReviewerResult } from "../../../src/domain/contracts.js";
 import type {
   CreatePullRequestInput,
+  GitHubIssue,
   GitHubPort,
   IssueCommentRef,
   PullRequestRef,
@@ -205,6 +206,7 @@ class FakeGitHub implements GitHubPort {
   getIssue = vi.fn(async (): Promise<never> => {
     throw new Error("must not be called");
   });
+  findIssueByTitle = vi.fn(async (): Promise<GitHubIssue | null> => null);
   updateIssueBody = vi.fn(async (): Promise<never> => {
     throw new Error("issue body/closure calls are forbidden in M1");
   });

@@ -79,6 +79,7 @@ function makeOctokit(): {
       issues: {
         get: vi.fn().mockResolvedValue({ data: issueData }),
         update: vi.fn().mockResolvedValue({ data: updatedIssue }),
+        listForRepo: vi.fn().mockResolvedValue({ data: [] }),
         listComments: vi.fn(),
         createComment: vi.fn().mockResolvedValue({ data: { id: 11, body: "ok" } }),
       },
@@ -120,6 +121,71 @@ describe("GitHubAdapter", () => {
       repo: "widgets",
       issue_number: 42,
     });
+  });
+
+  it("finds an issue by normalized title across live repository state", async () => {
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.listForRepo.mockResolvedValue({
+      data: [
+        {
+          number: 41,
+          node_id: "I_41",
+          title: "Other",
+          body: "",
+          updated_at: "2026-08-18T00:00:00Z",
+          state: "open",
+          html_url: "https://github.com/acme/widgets/issues/41",
+        },
+        {
+          number: 42,
+          node_id: "I_42",
+          title: "Add token refresh",
+          body: "Original body",
+          updated_at: "2026-08-18T00:00:00Z",
+          state: "open",
+          html_url: "https://github.com/acme/widgets/issues/42",
+        },
+      ],
+    });
+    const { github } = await makeAdapter(octokit);
+    await expect(github.findIssueByTitle(" add TOKEN refresh ")).resolves.toMatchObject({
+      number: 42,
+      title: "Add token refresh",
+    });
+    expect(octokit.rest.issues.listForRepo).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "widgets",
+      state: "all",
+      per_page: 100,
+      page: 1,
+    });
+  });
+
+  it("returns null when no issue title matches", async () => {
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.listForRepo.mockResolvedValue({ data: [] });
+    const { github } = await makeAdapter(octokit);
+    await expect(github.findIssueByTitle("missing")).resolves.toBeNull();
+  });
+
+  it("does not match pull requests when finding issues by title", async () => {
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.listForRepo.mockResolvedValue({
+      data: [
+        {
+          number: 42,
+          node_id: "PR_42",
+          title: "Add token refresh",
+          body: "PR body",
+          updated_at: "2026-08-18T00:00:00Z",
+          state: "open",
+          html_url: "https://github.com/acme/widgets/pull/42",
+          pull_request: {},
+        },
+      ],
+    });
+    const { github } = await makeAdapter(octokit);
+    await expect(github.findIssueByTitle("Add token refresh")).resolves.toBeNull();
   });
 
   it("updates the issue body and returns the updated issue", async () => {

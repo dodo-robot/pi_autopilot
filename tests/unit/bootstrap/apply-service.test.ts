@@ -56,6 +56,17 @@ class FakeGitHub implements ExtendedGitHubPort {
     this.createdIssues.push(input);
     return makeIssue(number, input.title);
   }
+  async findIssueByTitle(title: string): Promise<GitHubIssue | null> {
+    const desired = title.trim().toLowerCase();
+    const source = this as { issues?: Map<number, GitHubIssue>; issue?: GitHubIssue };
+    const issues = source.issues !== undefined
+      ? [...source.issues.values()]
+      : source.issue !== undefined
+        ? [source.issue]
+        : [];
+    return issues.find((issue) => issue.title.trim().toLowerCase() === desired) ?? null;
+  }
+
   async updateIssueBody(number: number, body: string): Promise<GitHubIssue> {
     this.updatedBodies.push({ number, body });
     return makeIssue(number, "updated");
