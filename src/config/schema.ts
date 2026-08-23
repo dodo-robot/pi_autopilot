@@ -100,6 +100,7 @@ export const AutopilotConfigSchema = z.object({
   reconciliation: z
     .object({
       requirementsPaths: z.array(z.string()).optional(),
+      reportStaleAfterHours: z.number().int().default(168),
     })
     .prefault({}),
   bootstrap: z
