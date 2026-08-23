@@ -53,6 +53,29 @@ interface CreateProjectResult {
   };
 }
 
+interface AddItemResult {
+  addProjectV2ItemById: {
+    item: { id: string };
+  };
+}
+
+interface ProjectFieldsResult {
+  node: {
+    fields: {
+      nodes: Array<{
+        __typename: string;
+        id: string;
+        name: string;
+        options?: Array<{ id: string; name: string }>;
+      }>;
+    };
+  };
+}
+
+interface UpdateFieldResult {
+  updateProjectV2ItemFieldValue: { projectV2Item: { id: string } };
+}
+
 /**
  * GitHub Projects v2 adapter bound to the repository resolved from the
  * local clone. Uses the GitHub GraphQL API via authenticated Octokit.
@@ -180,25 +203,75 @@ export class ProjectsAdapter implements ProjectsPort {
   async addIssueToBoard(
     boardId: string,
     issueNodeId: string,
-    _status: string,
+    status: string,
   ): Promise<void> {
     try {
-      const mutation = `mutation($projectId: ID!, $contentId: ID!) {
+      const graphql = this.octokit.graphql as GraphQLFunction;
+
+      // Step 1: add the item to the project.
+      const addMutation = `mutation($projectId: ID!, $contentId: ID!) {
         addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
-          item {
-            id
-          }
+          item { id }
         }
       }`;
-
-      const graphql = this.octokit.graphql as GraphQLFunction;
-      await graphql(mutation, {
+      const added = await graphql<AddItemResult>(addMutation, {
         projectId: boardId,
         contentId: issueNodeId,
       });
+      const itemId = added.addProjectV2ItemById.item.id;
 
-      // Status field update omitted in this milestone; field ID resolution requires
-      // an extra query and the spec marks it as a future extension.
+      // Step 2: find the Status field and the matching option ID.
+      const fieldsQuery = `query($projectId: ID!) {
+        node(id: $projectId) {
+          ... on ProjectV2 {
+            fields(first: 20) {
+              nodes {
+                __typename
+                ... on ProjectV2SingleSelectField {
+                  id
+                  name
+                  options { id name }
+                }
+              }
+            }
+          }
+        }
+      }`;
+      const fieldsData = await graphql<ProjectFieldsResult>(fieldsQuery, {
+        projectId: boardId,
+      });
+      const statusField = fieldsData.node.fields.nodes.find(
+        (f) => f.__typename === "ProjectV2SingleSelectField" && f.name === "Status",
+      );
+      if (statusField === undefined || statusField.options === undefined) {
+        // No Status field on this board — item was added, just skip status set.
+        return;
+      }
+      const option = statusField.options.find(
+        (o) => o.name.toLowerCase() === status.toLowerCase(),
+      );
+      if (option === undefined) {
+        // Requested status not found — item was added, skip status set.
+        return;
+      }
+
+      // Step 3: set the Status field value.
+      const updateMutation = `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+        updateProjectV2ItemFieldValue(input: {
+          projectId: $projectId
+          itemId: $itemId
+          fieldId: $fieldId
+          value: { singleSelectOptionId: $optionId }
+        }) {
+          projectV2Item { id }
+        }
+      }`;
+      await graphql<UpdateFieldResult>(updateMutation, {
+        projectId: boardId,
+        itemId,
+        fieldId: statusField.id,
+        optionId: option.id,
+      });
     } catch (error) {
       throw new ProjectsError(
         `failed to add issue to board ${boardId}`,
