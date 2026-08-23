@@ -9,6 +9,7 @@ export interface AppPaths {
   readonly daemonDir: string;
   readonly pidPath: string;
   readonly queuePath: string;
+  readonly pendingQueuePath: string;
   readonly logPath: string;
   /** Absolute directory for a run's artifacts. */
   runDir(runId: string): string;
@@ -52,6 +53,7 @@ export function appPaths(dataDir: string = defaultDataDir()): AppPaths {
     daemonDir,
     pidPath: path.join(daemonDir, "pid"),
     queuePath: path.join(daemonDir, "queue.json"),
+    pendingQueuePath: path.join(daemonDir, "queue-pending.json"),
     logPath: path.join(daemonDir, "daemon.log"),
     runDir(runId: string): string {
       assertSafeRunId(runId);
