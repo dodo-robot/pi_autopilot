@@ -14,6 +14,8 @@ import type { PrepareCommandDeps } from "./commands/prepare.js";
 import { registerPrepareCommand } from "./commands/prepare.js";
 import type { ReconcileCommandDeps } from "./commands/reconcile.js";
 import { registerReconcileCommand } from "./commands/reconcile.js";
+import type { ReconcileApplyCommandDeps } from "./commands/reconcile-apply.js";
+import { registerReconcileApplyCommand } from "./commands/reconcile-apply.js";
 import type { BootstrapCommandDeps } from "./commands/bootstrap.js";
 import { registerBootstrapCommand } from "./commands/bootstrap.js";
 import type { ResumeCommandDeps } from "./commands/resume.js";
@@ -41,6 +43,7 @@ export type CliDeps = CheckCommandDeps &
   StartCommandDeps &
   StopCommandDeps &
   ReconcileCommandDeps &
+  ReconcileApplyCommandDeps &
   BootstrapCommandDeps;
 
 /**
@@ -57,6 +60,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
   registerPrepareCommand(program, deps);
   registerAnalyzeCommand(program, deps);
   registerReconcileCommand(program, deps);
+  registerReconcileApplyCommand(program, deps);
   registerBootstrapCommand(program, deps);
   registerRunCommand(program, deps);
   registerRunsCommand(program, deps);
