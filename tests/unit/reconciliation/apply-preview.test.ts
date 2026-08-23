@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderReconciliationSection } from "../../../src/reconciliation/managed-section.js";
+import { upsertReconciliationSection } from "../../../src/reconciliation/managed-section.js";
 import {
   confirmMenu,
   renderEnrichPreview,
@@ -67,7 +67,10 @@ describe("confirmMenu", () => {
         reason: "Adding new feature",
       } as any;
       const currentBody = "Existing content";
-      const result = renderEnrichPreview(currentBody, patch);
+      const result = renderEnrichPreview(
+        currentBody,
+        upsertReconciliationSection(currentBody, patch.patch),
+      );
       expect(result).toContain("---");
       expect(result).toContain("+++");
       expect(result).toContain("### Goal");
@@ -92,8 +95,12 @@ describe("confirmMenu", () => {
         reason: "Updating goal",
       } as any;
       const currentBody = "Old goal was here";
-      const result = renderEnrichPreview(currentBody, patch);
-      expect(result).toContain("Old goal was here");
+      const result = renderEnrichPreview(
+        currentBody,
+        upsertReconciliationSection(currentBody, patch.patch),
+      );
+      expect(result).toContain(" Old goal was here");
+      expect(result).not.toContain("-Old goal was here");
     });
 
     it("handles empty current body", () => {
@@ -112,7 +119,7 @@ describe("confirmMenu", () => {
         patch: enrichment,
         reason: "Adding goal",
       } as any;
-      const result = renderEnrichPreview("", patch);
+      const result = renderEnrichPreview("", upsertReconciliationSection("", patch.patch));
       expect(result).toContain("### Goal");
       expect(result).toContain("New goal");
     });

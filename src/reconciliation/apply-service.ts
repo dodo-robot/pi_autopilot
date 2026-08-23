@@ -62,6 +62,16 @@ type Prepared =
       applyFresh: () => Promise<ApplyEntry>;
     };
 
+interface ApplyContext {
+  createIssueCandidateRefs: number[];
+}
+
+interface ExistingIssueMatch {
+  number: number;
+  title: string;
+  epicLinked: boolean;
+}
+
 export class ApplyService {
   private readonly now: () => string;
   private readonly confirm: (prompt: string) => Promise<MenuAnswer>;
@@ -82,14 +92,19 @@ export class ApplyService {
     const staleAgeHours =
       (Date.parse(this.now()) - Date.parse(report.generatedAt)) / (60 * 60 * 1000);
     const windowHours = this.stalenessWindowHours();
-    const guardActive = windowHours !== null && windowHours > 0;
-    const stale = guardActive && staleAgeHours > windowHours;
+    const guardActive = windowHours !== null;
+    const stale = windowHours !== null && staleAgeHours > windowHours;
     if (stale && opts.force !== true) {
       throw new Error(
         `stored report for ${analysisId} is ${Math.round(staleAgeHours)}h old ` +
           `(> ${windowHours}h); re-run reconcile or pass --force`,
       );
     }
+
+    const previousApply = await this.readPreviousApply(analysisId);
+    const context: ApplyContext = {
+      createIssueCandidateRefs: collectKnownIssueRefs(report, previousApply),
+    };
 
     const entries: ApplyEntry[] = [];
     const summary = emptySummary();
@@ -104,7 +119,7 @@ export class ApplyService {
 
       let prepared: Prepared;
       try {
-        prepared = await this.prepare(patch);
+        prepared = await this.prepare(patch, context);
       } catch (error) {
         recordEntry(entries, summary, failedEntry(patch, error));
         continue;
@@ -188,10 +203,10 @@ export class ApplyService {
     return `apply ${patch.type}${target}? [y] apply / [n] skip / [a] all / [q] abort `;
   }
 
-  private async prepare(patch: ReconciledPatch): Promise<Prepared> {
+  private async prepare(patch: ReconciledPatch, context: ApplyContext): Promise<Prepared> {
     switch (patch.type) {
       case "CREATE_ISSUE":
-        return this.prepareCreate(patch);
+        return this.prepareCreate(patch, context);
       case "ENRICH_ISSUE":
         return this.prepareEnrich(patch);
       case "ADD_DEPENDENCY":
@@ -205,12 +220,17 @@ export class ApplyService {
 
   private async prepareCreate(
     patch: Extract<ReconciledPatch, { type: "CREATE_ISSUE" }>,
+    context: ApplyContext,
   ): Promise<Prepared> {
-    const duplicate = await this.findExistingEpicIssueWithTitle(patch.epic, patch.spec.title);
-    if (duplicate !== null) {
+    const existing = await this.findExistingIssueWithTitle(
+      patch.epic,
+      patch.spec.title,
+      context.createIssueCandidateRefs,
+    );
+    if (existing !== null && (patch.epic === null || existing.epicLinked)) {
       return {
         kind: "skip",
-        entry: skipEntry(patch, "idempotent", `already exists as #${duplicate}`),
+        entry: skipEntry(patch, "idempotent", `already exists as #${existing.number}`),
       };
     }
 
@@ -219,7 +239,7 @@ export class ApplyService {
       patch,
       entryBase: entryBase(patch, `create issue "${patch.spec.title}"`),
       previewText: renderCreatePreview(patch),
-      applyFresh: () => this.applyCreateFresh(patch),
+      applyFresh: () => this.applyCreateFresh(patch, context),
     };
   }
 
@@ -242,7 +262,7 @@ export class ApplyService {
       kind: "write",
       patch,
       entryBase: entryBase(patch, `enrich issue #${patch.issue}`),
-      previewText: renderEnrichPreview(current.body, patch),
+      previewText: renderEnrichPreview(current.body, proposed),
       applyFresh: () => this.applyEnrichFresh(patch),
     };
   }
@@ -317,10 +337,32 @@ export class ApplyService {
 
   private async applyCreateFresh(
     patch: Extract<ReconciledPatch, { type: "CREATE_ISSUE" }>,
+    context: ApplyContext,
   ): Promise<ApplyEntry> {
-    const duplicate = await this.findExistingEpicIssueWithTitle(patch.epic, patch.spec.title);
-    if (duplicate !== null) {
-      return skipEntry(patch, "idempotent", `already exists as #${duplicate}`);
+    const existing = await this.findExistingIssueWithTitle(
+      patch.epic,
+      patch.spec.title,
+      context.createIssueCandidateRefs,
+    );
+    if (existing !== null) {
+      if (patch.epic === null || existing.epicLinked) {
+        return skipEntry(patch, "idempotent", `already exists as #${existing.number}`);
+      }
+      try {
+        await this.linkIssueToEpic(patch.epic, existing);
+      } catch (error) {
+        return failedEntry(
+          patch,
+          error,
+          `found existing #${existing.number} "${existing.title}" but failed to link it to epic #${patch.epic}`,
+          existing.number,
+        );
+      }
+      return {
+        ...entryBase(patch, `linked existing #${existing.number} "${existing.title}" to epic #${patch.epic}`),
+        outcome: { status: "applied" },
+        appliedIssueNumber: existing.number,
+      };
     }
 
     const created = await this.deps.github.createIssue({
@@ -329,15 +371,15 @@ export class ApplyService {
       labels: ["task"],
     });
 
-    if (patch.epic !== null) {
-      const epic = await this.deps.github.getIssue(patch.epic);
-      if (!collectEpicIssueRefs(epic.body).issues.includes(created.number)) {
-        const separator = epic.body.endsWith("\n") || epic.body.length === 0 ? "" : "\n";
-        await this.deps.github.updateIssueBody(
-          patch.epic,
-          `${epic.body}${separator}- [ ] #${created.number} ${created.title}`,
-        );
-      }
+    try {
+      if (patch.epic !== null) await this.linkIssueToEpic(patch.epic, created);
+    } catch (error) {
+      return failedEntry(
+        patch,
+        error,
+        `created #${created.number} "${created.title}" but failed to link it to epic #${patch.epic}`,
+        created.number,
+      );
     }
 
     return {
@@ -377,23 +419,60 @@ export class ApplyService {
     };
   }
 
-  private async findExistingEpicIssueWithTitle(
+  private async findExistingIssueWithTitle(
     epicNumber: number | null,
     title: string,
-  ): Promise<number | null> {
-    if (epicNumber === null) return null;
+    candidateRefs: number[],
+  ): Promise<ExistingIssueMatch | null> {
+    const desired = normalizeTitle(title);
+    const epicRefs = new Set<number>();
 
-    const epic = await this.deps.github.getIssue(epicNumber);
-    const desired = title.trim().toLowerCase();
-    for (const ref of collectEpicIssueRefs(epic.body).issues) {
-      try {
-        const existing = await this.deps.github.getIssue(ref);
-        if (existing.title.trim().toLowerCase() === desired) return ref;
-      } catch {
-        // A stale/broken epic checklist ref must not block create idempotency.
+    if (epicNumber !== null) {
+      const epic = await this.deps.github.getIssue(epicNumber);
+      for (const ref of collectEpicIssueRefs(epic.body).issues) {
+        epicRefs.add(ref);
+        const existing = await this.fetchIssueOrNull(ref);
+        if (existing !== null && normalizeTitle(existing.title) === desired) {
+          return { number: existing.number, title: existing.title, epicLinked: true };
+        }
       }
     }
+
+    for (const ref of candidateRefs) {
+      if (epicRefs.has(ref) || ref === epicNumber) continue;
+      const existing = await this.fetchIssueOrNull(ref);
+      if (existing !== null && normalizeTitle(existing.title) === desired) {
+        return { number: existing.number, title: existing.title, epicLinked: false };
+      }
+    }
+
     return null;
+  }
+
+  private async fetchIssueOrNull(number: number): Promise<GitHubIssue | null> {
+    try {
+      return await this.deps.github.getIssue(number);
+    } catch {
+      return null;
+    }
+  }
+
+  private async linkIssueToEpic(epicNumber: number, issue: Pick<GitHubIssue, "number" | "title">): Promise<void> {
+    const epic = await this.deps.github.getIssue(epicNumber);
+    if (collectEpicIssueRefs(epic.body).issues.includes(issue.number)) return;
+    const separator = epic.body.endsWith("\n") || epic.body.length === 0 ? "" : "\n";
+    await this.deps.github.updateIssueBody(
+      epicNumber,
+      `${epic.body}${separator}- [ ] #${issue.number} ${issue.title}`,
+    );
+  }
+
+  private async readPreviousApply(analysisId: string): Promise<ApplyReport | null> {
+    try {
+      return await this.deps.artifacts.readJson<ApplyReport>(analysisId, APPLY_ARTIFACT);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -437,10 +516,16 @@ function skipEntry(
   };
 }
 
-function failedEntry(patch: ReconciledPatch, error: unknown): ApplyEntry {
+function failedEntry(
+  patch: ReconciledPatch,
+  error: unknown,
+  detail = patch.reason,
+  appliedIssueNumber?: number,
+): ApplyEntry {
   return {
-    ...entryBase(patch),
+    ...entryBase(patch, detail),
     outcome: { status: "failed", error: error instanceof Error ? error.message : String(error) },
+    ...(appliedIssueNumber === undefined ? {} : { appliedIssueNumber }),
   };
 }
 
@@ -471,4 +556,29 @@ function recordEntry(
 
 function isApplyEntry(value: GitHubIssue | ApplyEntry | string): value is ApplyEntry {
   return typeof value === "object" && value !== null && "outcome" in value;
+}
+
+function collectKnownIssueRefs(
+  report: ReconciliationReport,
+  previousApply: ApplyReport | null,
+): number[] {
+  const refs = new Set<number>();
+  if (report.epicRef !== null) refs.add(report.epicRef);
+  for (const coverage of report.coverage) {
+    if (coverage.epic !== null) refs.add(coverage.epic);
+    for (const issue of coverage.issues) refs.add(issue);
+  }
+  for (const patch of report.patches) {
+    if ("issue" in patch && patch.issue !== null) refs.add(patch.issue);
+    if (patch.type === "ADD_DEPENDENCY") refs.add(patch.dependsOn);
+    if (patch.type === "CREATE_ISSUE" && patch.epic !== null) refs.add(patch.epic);
+  }
+  for (const entry of previousApply?.entries ?? []) {
+    if (entry.appliedIssueNumber !== undefined) refs.add(entry.appliedIssueNumber);
+  }
+  return [...refs];
+}
+
+function normalizeTitle(title: string): string {
+  return title.trim().toLowerCase();
 }

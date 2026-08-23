@@ -213,6 +213,83 @@ describe("ApplyService.apply", () => {
     expect(stored).toEqual(result);
   });
 
+  it("links a matching unlinked issue from known report refs instead of creating a duplicate", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(21, makeIssue(21, "New widget", "Already exists outside the epic"));
+    await artifacts.writeJson(analysisId, "reconciliation-report.json", {
+      ...baseReport([
+        {
+          type: "CREATE_ISSUE",
+          epic: 12,
+          spec: { title: "New widget", enrichment: enrichment("Create new widget") },
+          reason: "missing",
+          policy: "auto-safe",
+        },
+      ]),
+      coverage: [
+        {
+          requirementId: "REQ-1",
+          description: "Need a widget",
+          epic: 12,
+          issues: [21],
+          status: "partial",
+          evidence: "Existing unlinked issue",
+        },
+      ],
+    });
+
+    const result = await service().apply(analysisId, opts);
+
+    expect(github.created).toHaveLength(0);
+    expect(github.updated).toEqual([
+      { number: 12, body: expect.stringContaining("- [ ] #21 New widget") },
+    ]);
+    expect(result.summary.applied).toBe(1);
+    expect(result.entries[0]).toMatchObject({
+      appliedIssueNumber: 21,
+      outcome: { status: "applied" },
+    });
+  });
+
+  it("retries a create whose issue was created but epic linkback failed without duplicating it", async () => {
+    const failingGithub = new FakeGitHubWithFail();
+    github = failingGithub;
+    github.issues.set(12, epic());
+    failingGithub.throwOnUpdateIndex = [0];
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "CREATE_ISSUE",
+          epic: 12,
+          spec: { title: "New widget", enrichment: enrichment("Create new widget") },
+          reason: "missing",
+          policy: "auto-safe",
+        },
+      ]),
+    );
+
+    const first = await service({ github }).apply(analysisId, opts);
+    expect(first.summary.failed).toBe(1);
+    expect(first.entries[0]).toMatchObject({
+      appliedIssueNumber: 13,
+      outcome: { status: "failed" },
+    });
+    expect(github.created).toHaveLength(1);
+    expect(github.issues.get(12)?.body).not.toContain("#13 New widget");
+
+    const second = await service({ github }).apply(analysisId, opts);
+
+    expect(second.summary.applied).toBe(1);
+    expect(second.entries[0]).toMatchObject({
+      appliedIssueNumber: 13,
+      outcome: { status: "applied" },
+    });
+    expect(github.created).toHaveLength(1);
+    expect(github.issues.get(12)?.body).toContain("- [ ] #13 New widget");
+  });
+
   it("skips an auto-safe patch whose target already reflects the change", async () => {
     github.issues.set(
       15,
@@ -273,6 +350,41 @@ describe("ApplyService.apply", () => {
     expect(result.summary.failed).toBe(1);
     expect(result.entries.map((e) => e.outcome.status)).toEqual(["applied", "failed", "applied"]);
     expect(github.updated.some((u) => u.number === 15 && u.body.includes("Depends on:"))).toBe(true);
+  });
+
+  it("applies the current and remaining auto-safe patches when interactive answer is all", async () => {
+    github.issues.set(15, issue15());
+    github.issues.set(16, makeIssue(16, "Session storage", "Implement sessions"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "ENRICH_ISSUE",
+          issue: 15,
+          patch: enrichment("Add OAuth refresh"),
+          reason: "missing criteria",
+          policy: "auto-safe",
+        },
+        { type: "ADD_DEPENDENCY", issue: 15, dependsOn: 16, reason: "needs #16", policy: "auto-safe" },
+      ]),
+    );
+    const previews: string[] = [];
+    let promptCount = 0;
+
+    const result = await service({
+      onPreview: (text) => previews.push(text),
+      confirmMenu: async () => {
+        promptCount += 1;
+        return "all";
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(promptCount).toBe(1);
+    expect(previews).toHaveLength(1);
+    expect(result.summary.applied).toBe(2);
+    expect(result.entries.map((entry) => entry.outcome.status)).toEqual(["applied", "applied"]);
+    expect(github.updated.some((u) => u.body.includes("Depends on:"))).toBe(true);
   });
 
   it("records user skips and aborts in interactive mode without applying aborted patches", async () => {
@@ -358,6 +470,36 @@ describe("ApplyService.apply", () => {
     await expect(service().apply(analysisId, opts)).rejects.toThrow("re-run reconcile or pass --force");
     await expect(service().apply(analysisId, { ...opts, force: true })).resolves.toMatchObject({
       staleness: { overriddenByForce: true },
+    });
+  });
+
+  it("treats zero stale hours as an active zero-hour guard and disables only null/negative", async () => {
+    github.issues.set(15, issue15());
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      {
+        ...baseReport([
+          {
+            type: "ENRICH_ISSUE",
+            issue: 15,
+            patch: enrichment("Add OAuth refresh"),
+            reason: "missing criteria",
+            policy: "auto-safe",
+          },
+        ]),
+        generatedAt: "2026-08-22T23:59:00.000Z",
+      },
+    );
+
+    await expect(service({ reportStaleAfterHours: 0 }).apply(analysisId, opts)).rejects.toThrow(
+      "re-run reconcile or pass --force",
+    );
+    await expect(service({ reportStaleAfterHours: null }).apply(analysisId, opts)).resolves.toMatchObject({
+      staleness: { guardApplied: false },
+    });
+    await expect(service({ reportStaleAfterHours: -1 }).apply(analysisId, opts)).resolves.toMatchObject({
+      staleness: { guardApplied: false },
     });
   });
 });

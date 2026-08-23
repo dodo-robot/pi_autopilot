@@ -1,17 +1,12 @@
 import type { ReconciledPatch } from "../domain/reconciliation.js";
-import { renderReconciliationSection } from "./managed-section.js";
 import { renderDependencyLine } from "./apply-dependency.js";
 import { renderUnifiedDiff } from "../readiness/refinement-section.js";
 
 export type MenuAnswer = "apply" | "skip" | "all" | "abort";
 
-/** Render the diff of an ENRICH_ISSUE against the issue's current body. */
-export function renderEnrichPreview(
-  currentBody: string,
-  patch: Extract<ReconciledPatch, { type: "ENRICH_ISSUE" }>,
-): string {
-  const proposed = renderReconciliationSection(patch.patch);
-  return renderUnifiedDiff(currentBody, proposed);
+/** Render the diff between an issue's current body and the exact proposed body. */
+export function renderEnrichPreview(currentBody: string, proposedBody: string): string {
+  return renderUnifiedDiff(currentBody, proposedBody);
 }
 
 /** Render the one dependency line an ADD_DEPENDENCY will insert. */
