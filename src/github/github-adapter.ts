@@ -57,6 +57,12 @@ export interface GitHubPort {
     issueNumber: number,
     marker: string,
   ): Promise<IssueCommentRef | null>;
+  createIssue(input: {
+    title: string;
+    body: string;
+    labels: string[];
+  }): Promise<GitHubIssue>;
+  ensureLabel(name: string, color: string): Promise<void>;
 }
 
 /** Minimal structural surface of Octokit used by the adapter. */
@@ -109,6 +115,24 @@ export interface OctokitLike {
         issue_number: number;
         body: string;
       }): Promise<{ data: OctokitCommentData }>;
+      create(params: {
+        owner: string;
+        repo: string;
+        title: string;
+        body: string;
+        labels: string[];
+      }): Promise<{ data: OctokitIssueData }>;
+      getLabel(params: {
+        owner: string;
+        repo: string;
+        name: string;
+      }): Promise<{ data: unknown }>;
+      createLabel(params: {
+        owner: string;
+        repo: string;
+        name: string;
+        color: string;
+      }): Promise<{ data: unknown }>;
     };
     pulls: {
       list(params: {
@@ -310,6 +334,46 @@ export class GitHubAdapter implements GitHubPort {
         `failed to list comments on issue #${issueNumber}`,
         { cause: error },
       );
+    }
+  }
+
+  async createIssue(input: {
+    title: string;
+    body: string;
+    labels: string[];
+  }): Promise<GitHubIssue> {
+    try {
+      const { data } = await this.octokit.rest.issues.create({
+        owner: this.owner,
+        repo: this.repo,
+        title: input.title,
+        body: input.body,
+        labels: input.labels,
+      });
+      return mapIssue(data);
+    } catch (error) {
+      throw new GitHubError("failed to create issue", { cause: error });
+    }
+  }
+
+  async ensureLabel(name: string, color: string): Promise<void> {
+    try {
+      await this.octokit.rest.issues.getLabel({
+        owner: this.owner,
+        repo: this.repo,
+        name,
+      });
+    } catch {
+      try {
+        await this.octokit.rest.issues.createLabel({
+          owner: this.owner,
+          repo: this.repo,
+          name,
+          color,
+        });
+      } catch {
+        // Already exists from a concurrent call
+      }
     }
   }
 

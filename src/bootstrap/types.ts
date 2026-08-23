@@ -7,6 +7,8 @@ export const BootstrapIssueSchema = z.object({
   requirementRef: z.object({ doc: z.string(), section: z.string() }).optional(),
   /** Filled in by apply-service after GitHub issue creation. */
   githubNumber: z.number().int().positive().optional(),
+  /** Filled in by apply-service after GitHub issue creation. */
+  githubNodeId: z.string().optional(),
 });
 export type BootstrapIssue = z.infer<typeof BootstrapIssueSchema>;
 
@@ -17,6 +19,8 @@ export const BootstrapEpicSchema = z.object({
   issues: z.array(BootstrapIssueSchema),
   /** Filled in by apply-service after GitHub epic creation. */
   githubNumber: z.number().int().positive().optional(),
+  /** Filled in by apply-service after GitHub epic creation. */
+  githubNodeId: z.string().optional(),
 });
 export type BootstrapEpic = z.infer<typeof BootstrapEpicSchema>;
 
