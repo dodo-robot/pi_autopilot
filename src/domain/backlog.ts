@@ -59,6 +59,10 @@ export const BacklogReportSchema = z.object({
           status: z.enum(["READY", "NEEDS_REFINEMENT"]),
         })
         .nullable(),
+      // Keep in sync with LabelAction in ../analysis/label-reconciliation.ts
+      labelAction: z
+        .enum(["labeled", "unlabeled", "unchanged", "skipped-in-progress"])
+        .optional(),
     }),
   ),
   executable: z.array(z.number().int().positive()),

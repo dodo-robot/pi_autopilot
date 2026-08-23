@@ -52,4 +52,57 @@ describe("parseBacklogReport", () => {
     bad.scope.totalIssues = -1;
     expect(() => parseBacklogReport(bad)).toThrow();
   });
+
+  it("accepts an issue entry with an optional labelAction", () => {
+    const report = parseBacklogReport({
+      repository: { owner: "acme", repo: "widgets" },
+      epicRef: null,
+      requestedRefs: [42],
+      generatedAt: "2026-08-23T00:00:00Z",
+      analysisId: "discover-1",
+      scope: { totalIssues: 1, analyzed: 1, unresolved: 0 },
+      issues: [
+        {
+          issueNumber: 42,
+          title: "Fix widget",
+          url: "https://github.com/acme/widgets/issues/42",
+          classification: "READY",
+          screen: { classification: "READY", reasons: [] },
+          readiness: null,
+          labelAction: "labeled",
+        },
+      ],
+      executable: [42],
+      needsWork: [],
+      summary: { ready: 1, needsRefinement: 0, blocked: 0, ambiguous: 0, skipped: 0, unresolved: 0 },
+      refinerSessions: 0,
+    });
+    expect(report.issues[0]!.labelAction).toBe("labeled");
+  });
+
+  it("still accepts a report with no labelAction (analyze's existing shape)", () => {
+    const report = parseBacklogReport({
+      repository: { owner: "acme", repo: "widgets" },
+      epicRef: null,
+      requestedRefs: [42],
+      generatedAt: "2026-08-23T00:00:00Z",
+      analysisId: "analyze-1",
+      scope: { totalIssues: 1, analyzed: 1, unresolved: 0 },
+      issues: [
+        {
+          issueNumber: 42,
+          title: "Fix widget",
+          url: "https://github.com/acme/widgets/issues/42",
+          classification: "READY",
+          screen: { classification: "READY", reasons: [] },
+          readiness: null,
+        },
+      ],
+      executable: [42],
+      needsWork: [],
+      summary: { ready: 1, needsRefinement: 0, blocked: 0, ambiguous: 0, skipped: 0, unresolved: 0 },
+      refinerSessions: 0,
+    });
+    expect(report.issues[0]!.labelAction).toBeUndefined();
+  });
 });
