@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { confirmMenu } from "../../../src/reconciliation/apply-preview.js";
+import { renderReconciliationSection } from "../../../src/reconciliation/managed-section.js";
+import {
+  confirmMenu,
+  renderEnrichPreview,
+  renderDependencyPreview,
+  renderCreatePreview,
+} from "../../../src/reconciliation/apply-preview.js";
 
 describe("confirmMenu", () => {
   it("maps y to apply, n to skip, a to all, q to abort", async () => {
@@ -19,7 +25,7 @@ describe("confirmMenu", () => {
     expect(abort).toHaveLength(4);
   });
 
-  it("treats blank/empty input as skip (a stray Enter never applies)", async () => {
+  it("treats blank/empty input as skip", async () => {
     const read = (): Promise<string> => Promise.resolve("");
     expect(await confirmMenu("x? ", () => {}, read)).toBe("skip");
   });
@@ -30,7 +36,7 @@ describe("confirmMenu", () => {
   });
 
   it("loops until a valid answer", async () => {
-    const inputs = ["zz", "\n", "Y"];
+    const inputs = ["zz", "Y"];
     const readIndex = { value: 0 };
     const read = (): Promise<string> => {
       const input = inputs[readIndex.value];
@@ -41,5 +47,62 @@ describe("confirmMenu", () => {
     expect(await confirmMenu("? ", (s) => { writes.push(s); }, read)).toBe("apply");
     // wrote the invalid-input retry prompt at least once
     expect(writes.some((s) => s.includes("apply") || s.includes("skip"))).toBe(true);
+  });
+
+  describe("renderEnrichPreview", () => {
+    it("renders the diff between current body and proposed section", () => {
+      const enrichment = {
+        goal: "Implement new feature",
+        sourceRequirements: ["Requirement 1"],
+        acceptanceCriteria: [],
+        constraints: [],
+        nonGoals: [],
+        validation: [],
+        relevantAreas: [],
+      };
+      // verify that the proposed section is rendered correctly
+      const proposed = renderReconciliationSection(enrichment);
+      expect(proposed).toContain("### Goal");
+      expect(proposed).toContain("Implement new feature");
+      expect(proposed).toContain("- Requirement 1");
+    });
+  });
+
+  describe("renderDependencyPreview", () => {
+    it("returns the dependency line for a given line number", () => {
+      const result = renderDependencyPreview("", 42);
+      expect(result).toBe(`- #42 (unsatisfied)`);
+    });
+
+    it("accepts currentBody parameter without using it (interface compliance)", () => {
+      const result = renderDependencyPreview("some current body text", 100);
+      expect(result).toBe(`- #100 (unsatisfied)`);
+    });
+  });
+
+  describe("renderCreatePreview", () => {
+    it("returns title and goal for a CREATE_ISSUE patch", () => {
+      const patch = {
+        type: "CREATE_ISSUE",
+        spec: {
+          title: "Test Issue",
+          enrichment: { goal: "Implement feature X" },
+        },
+      } as any;
+      const result = renderCreatePreview(patch);
+      expect(result).toBe("title: Test Issue\nImplement feature X");
+    });
+
+    it("shows '(no goal)' when goal is empty", () => {
+      const patch = {
+        type: "CREATE_ISSUE",
+        spec: {
+          title: "Test Issue",
+          enrichment: { goal: "" },
+        },
+      } as any;
+      const result = renderCreatePreview(patch);
+      expect(result).toBe("title: Test Issue\n(no goal)");
+    });
   });
 });

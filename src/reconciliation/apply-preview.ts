@@ -16,6 +16,7 @@ export function renderEnrichPreview(
 
 /** Render the one dependency line an ADD_DEPENDENCY will insert. */
 export function renderDependencyPreview(
+  currentBody: string,
   dependsOn: number,
 ): string {
   return `${renderDependencyLine(dependsOn)}`;
@@ -32,8 +33,8 @@ export function renderCreatePreview(
 
 /**
  * Prompt for one of apply / skip / all / abort. Injected write/read for
- * tests; default reads/writes from process stdio. Blank input defaults to
- * "skip" so a stray Enter never writes.
+ * tests; default reads/writes from process stdio. Blank input always
+ * defaults to "skip" (a stray Enter never applies).
  */
 export async function confirmMenu(
   prompt: string,
@@ -42,7 +43,6 @@ export async function confirmMenu(
     new Promise((resolve) => {
       process.stdin.once("data", (data) => resolve(data.toString()));
     }),
-  invalidAnswerSeen: boolean = false,
 ): Promise<MenuAnswer> {
   for (;;) {
     write(prompt);
@@ -54,13 +54,10 @@ export async function confirmMenu(
     if (raw === "a" || raw === "all") return "all";
     if (raw === "q" || raw === "quit" || raw === "abort") return "abort";
     
-    // Handle blank input: skip only if no invalid answer seen yet
-    if (raw === "") {
-      if (!invalidAnswerSeen) return "skip";
-    }
+    // Blank input always returns skip (binding safety invariant)
+    if (raw === "") return "skip";
     
-    // Invalid answer: track that we've seen one and prompt to retry
-    invalidAnswerSeen = true;
+    // Invalid answer: prompt to retry
     write(`invalid answer; [y] apply / [n] skip / [a] all / [q] abort\n`);
   }
 }
