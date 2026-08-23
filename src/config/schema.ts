@@ -25,6 +25,7 @@ export const RoleAgentsConfigSchema = z
     reviewer: RoleModelEntrySchema.optional(),
     brainstormer: RoleModelEntrySchema.optional(),
     reconciler: RoleModelEntrySchema.optional(),
+    bootstrapper: RoleModelEntrySchema.optional(),
   })
   .prefault({});
 export type RoleAgentsConfig = z.infer<typeof RoleAgentsConfigSchema>;
@@ -98,6 +99,12 @@ export const AutopilotConfigSchema = z.object({
     .prefault({}),
   reconciliation: z
     .object({
+      requirementsPaths: z.array(z.string()).optional(),
+    })
+    .prefault({}),
+  bootstrap: z
+    .object({
+      tokenThreshold: z.number().int().positive().default(80_000),
       requirementsPaths: z.array(z.string()).optional(),
     })
     .prefault({}),

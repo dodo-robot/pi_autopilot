@@ -11,6 +11,7 @@ export const RoleSchema = z.enum([
   "reviewer",
   "brainstormer",
   "reconciler",
+  "bootstrapper",
 ]);
 export type Role = z.infer<typeof RoleSchema>;
 
@@ -219,6 +220,32 @@ export const ReconcilerResultSchema = z.object({
 });
 export type ReconcilerResult = z.infer<typeof ReconcilerResultSchema>;
 
+export const BootstrapperResultSchema = z.object({
+  projectBoard: z.object({
+    title: z.string().min(1),
+    columns: z.array(z.string()),
+  }),
+  epics: z.array(z.object({
+    title: z.string().min(1),
+    description: z.string(),
+    issues: z.array(z.object({
+      title: z.string().min(1),
+      body: z.string(),
+      requirementRef: z.object({ doc: z.string(), section: z.string() }).optional(),
+    })),
+  })),
+  dependencies: z.array(z.object({
+    from: z.string().min(1),
+    to: z.string().min(1),
+    reason: z.string(),
+  })),
+  tracks: z.array(z.object({
+    wave: z.number().int().positive(),
+    issues: z.array(z.string()),
+  })),
+});
+export type BootstrapperResult = z.infer<typeof BootstrapperResultSchema>;
+
 /** Union of all role results; runners narrow by the session role. */
 export const RoleResultSchema = z.union([
   RefinerResultSchema,
@@ -226,6 +253,7 @@ export const RoleResultSchema = z.union([
   ReviewerResultSchema,
   BrainstormerResultSchema,
   ReconcilerResultSchema,
+  BootstrapperResultSchema,
 ]);
 export type RoleResult = z.infer<typeof RoleResultSchema>;
 
