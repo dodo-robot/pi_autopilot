@@ -8,7 +8,7 @@ import { ProjectsAdapter } from "../github/projects-adapter.js";
 import type { RepositoryContext } from "../github/repository-context.js";
 import { resolveRepositoryContext } from "../github/repository-context.js";
 import { ArtifactStore } from "../persistence/artifact-store.js";
-import { PiRunner } from "../pi/pi-runner.js";
+import { PiRunner, PiRunError } from "../pi/pi-runner.js";
 import { appPaths } from "../platform/paths.js";
 import type { ProcessRunner } from "../platform/process-runner.js";
 import { ProcessRunner as ProcessRunnerImpl } from "../platform/process-runner.js";
@@ -95,6 +95,11 @@ export function registerBootstrapCommand(
         if (error instanceof BootstrapSizeError) {
           stderr(error.message);
           setExitCode(2);
+        } else if (error instanceof PiRunError) {
+          stderr(`autopilot bootstrap: ${error.message}`);
+          const diag = error.diagnostics;
+          if (diag.stderr) stderr(diag.stderr.slice(0, 2000));
+          setExitCode(1);
         } else {
           stderr(`autopilot bootstrap: ${error instanceof Error ? error.message : String(error)}`);
           setExitCode(1);

@@ -59,6 +59,26 @@ export function safeProcessEnv(
     if (value !== undefined) env[key] = value;
   }
   env.GIT_TERMINAL_PROMPT = "0";
+  // Propagate the provider credentials Pi needs to authenticate in a headless
+  // session, and Pi's own provider/model selectors. These are present in the
+  // operator's environment by design and are required for role sessions to
+  // reach the model provider. Without them the session fails with
+  // "No API key found for <provider>".
+  const PROVIDER_VARS = [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "PI_PROVIDER",
+    "PI_MODEL",
+  ];
+  for (const key of PROVIDER_VARS) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
   return { ...env, ...extra };
 }
 

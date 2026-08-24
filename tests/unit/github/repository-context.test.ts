@@ -8,6 +8,7 @@ import {
   parseGitHubRemote,
   RepositoryContextError,
   resolveRepositoryContext,
+  safeProcessEnv,
 } from "../../../src/github/repository-context.js";
 
 const REMOTE_SSH = "git@github.com:acme/widgets.git";
@@ -155,6 +156,30 @@ describe("resolveRepositoryContext", () => {
     await expect(resolveRepositoryContext("/tmp/repo", runner)).rejects.toThrow(
       /not a GitHub repository/,
     );
+  });
+});
+
+describe("safeProcessEnv", () => {
+  it("propagates provider keys and PI selectors", () => {
+    const keyName = "TEST_PROPAGATE_DEEPSEEK_API_KEY";
+    const original = process.env.DEEPSEEK_API_KEY;
+    const originalPi = process.env.PI_MODEL;
+    process.env.DEEPSEEK_API_KEY = "sk-test-123";
+    process.env.PI_MODEL = "deepseek/deepseek-v4-flash";
+    try {
+      const env = safeProcessEnv();
+      expect(env.DEEPSEEK_API_KEY).toBe("sk-test-123");
+      expect(env.PI_MODEL).toBe("deepseek/deepseek-v4-flash");
+      // Non-listed secrets are not leaked.
+      process.env[keyName] = "secret";
+      expect(safeProcessEnv()[keyName]).toBeUndefined();
+    } finally {
+      if (original === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = original;
+      if (originalPi === undefined) delete process.env.PI_MODEL;
+      else process.env.PI_MODEL = originalPi;
+      delete process.env[keyName];
+    }
   });
 });
 
