@@ -114,6 +114,20 @@ Implementation plan: `docs/superpowers/plans/2026-08-23-reconcile-apply-safe.md`
 
 ---
 
+## 2026-08-23 — Continuous backlog intake ✅
+
+**Scope:** Mutating counterpart to `analyze` and queue-append mechanism for the daemon.
+
+- `autopilot discover <ref> [moreRefs...]` — mutating sibling of `analyze`; reconciles the `agent:ready` label to match computed readiness; never touches `agent:in-progress`.
+- `autopilot queue add <issue...>` — appends issues to a running daemon's queue via a new atomically-written `queue-pending.json`.
+- Daemon just-in-time claim (`agent:in-progress`) before each run and outcome-dependent release (cleared on success, left in place on BLOCKED/FAILED as a "needs a human" signal, both labels cleared on NEEDS_REFINEMENT).
+- All label writes on the daemon and `discover` paths are best-effort — never block a run or change an exit code.
+
+Design spec: `docs/superpowers/specs/2026-08-23-continuous-backlog-intake-design.md`
+Implementation plan: `docs/superpowers/plans/2026-08-23-continuous-backlog-intake.md`
+
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and
@@ -170,36 +184,6 @@ shape of the fix is settled:
   `bootstrap` nor reconciliation's `CREATE_ISSUE` patch has anywhere to
   write. This blocks bootstrap *and* the reconciliation apply-safe
   milestone above; implementing `createIssue` once unblocks both.
-
-### Continuous backlog intake (M4) 🔲
-
-Design settled via grilling session 2026-08-22; see [CONTEXT.md](../CONTEXT.md)
-for vocabulary (Readiness, Claim, Analyze, Discover, Queue, Pending queue)
-and [ADR-0001](adr/0001-best-effort-github-claim-marker.md) for the claim
-mechanism's trade-offs. Deliberately deferred from M3 by
-`m3-design.md` §9 — M3 itself ships as already scoped (immutable queue,
-explicit list, no GitHub write-back); these three land together as M4 work,
-not M3.
-
-- **`agent:ready` GitHub marker.** A claim/mutex (`agent:ready` →
-  `agent:in-progress`), not a re-derivable property — readiness itself is
-  already computed locally by `analyze`. Written by a new `discover`
-  command (the mutating sibling of read-only `analyze`); transitioned
-  just-in-time by the daemon around each issue it executes, not for the
-  whole queue upfront. Best-effort only — no distributed locking, no
-  automatic stale-claim expiry. (requirements.md §6, §24)
-- **Automatic issue selection without a prior `analyze` pass.** New
-  `discover <ref> [moreRefs...]` command, mirroring `analyze`'s signature,
-  scans and writes the `agent:ready` label — removing the need to run
-  `analyze` before `start`. On-demand only (no background poll); fully
-  decoupled from queue-append below — `discover` reports/labels, a human
-  decides whether to queue anything. (requirements.md §4, §26)
-- **Appending to a running queue.** A separate additions-only
-  `queue-pending.json`, written by a new `queue add <issue>` command and
-  drained by the daemon once per loop iteration, merged onto the queue's
-  tail (FIFO, deduplicated). Keeps the daemon the sole writer of
-  `queue.json`. `queue add` does no readiness validation, consistent with
-  `start`'s existing explicit-list behavior. (M3 design §9)
 
 ### Concurrency and scheduling (M4) 🔲
 
