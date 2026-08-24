@@ -76,6 +76,7 @@ When your analysis is complete, call the submit_result tool exactly once with a 
     { "type": "CREATE_ISSUE", "epic": ${epic.number}, "reason": "...", "spec": { "title": "...", "enrichment": { "goal": "...", "sourceRequirements": [], "acceptanceCriteria": [], "constraints": [], "nonGoals": [], "validation": [], "relevantAreas": [] } } },
     { "type": "ADD_DEPENDENCY", "issue": 123, "dependsOn": 120, "reason": "..." },
     { "type": "REMOVE_DEPENDENCY", "issue": 123, "dependsOn": 120, "reason": "..." },
+    { "type": "SPLIT_ISSUE", "issue": 123, "reason": "...", "children": [ { "title": "...", "enrichment": { "goal": "...", "sourceRequirements": [], "acceptanceCriteria": [], "constraints": [], "nonGoals": [], "validation": [], "relevantAreas": [] } } ] },
     { "type": "MARK_STALE", "issue": 123, "reason": "..." },
     { "type": "NEEDS_HUMAN", "issue": 123, "ambiguityType": "ENGINEERING" | "PRODUCT" | "MISSING_CONTEXT" | "CONFLICTING_REQUIREMENTS", "reason": "...", "questions": ["..."] }
   ]
@@ -90,7 +91,7 @@ Rules
 - Propose REMOVE_DEPENDENCY only when a currently-recorded managed-form dependency (the "- #N (unsatisfied)" bullet, not free-text prose like "depends on #12") no longer reflects a real ordering constraint — for example, the dependency was satisfied by a rearchitecting that removed the need for it, or was recorded in error. Never propose it against a dependency you only see written as free-text human prose.
 - ENGINEERING ambiguity (which module owns a behavior, whether an abstraction already exists) does NOT require NEEDS_HUMAN: resolve it by inspecting the repository.
 - PRODUCT ambiguity, MISSING_CONTEXT (a requirement you cannot locate enough information about), and CONFLICTING_REQUIREMENTS (two requirement documents disagree) MUST produce a NEEDS_HUMAN patch with specific questions.
-- An issue is the right size when it has one primary outcome, fits one isolated agent session, and its acceptance criteria are independently testable. If an issue's scope spans multiple independent behavioral outcomes (not just multiple implementation steps toward one outcome), it is oversized: this milestone cannot propose SPLIT_ISSUE, so raise a NEEDS_HUMAN patch (ambiguityType "ENGINEERING" if the split itself is mechanical, "PRODUCT" if which slice ships first is a product call) naming the outcomes you would split it into, rather than silently keeping or enriching it as one issue.
+- An issue is the right size when it has one primary outcome, fits one isolated agent session, and its acceptance criteria are independently testable. If an issue's scope spans multiple independent behavioral outcomes (not just multiple implementation steps toward one outcome), it is oversized. When the split itself is mechanical — the outcomes are clear and their relative order/priority is not a product call — propose SPLIT_ISSUE with one full IssueSpec (title + complete enrichment) per outcome. When which slice ships first, or how to divide the scope, requires a product decision, raise a NEEDS_HUMAN patch (ambiguityType "PRODUCT") naming the outcomes instead of proposing a split yourself.
 - Never silently drop a requirement or an issue from your analysis.
 
 Input

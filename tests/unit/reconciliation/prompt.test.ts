@@ -70,10 +70,12 @@ describe("buildReconcilerPrompt", () => {
     expect(prompt).toContain("epic has no checklist issues");
   });
 
-  it("instructs the model to flag oversized issues as NEEDS_HUMAN instead of splitting or silently keeping them", () => {
+  it("instructs the model to propose SPLIT_ISSUE for an oversized issue with a mechanical split, and NEEDS_HUMAN when the split itself is a product call", () => {
     const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
     expect(prompt).toContain("oversized");
+    expect(prompt).toContain("SPLIT_ISSUE");
     expect(prompt).toContain("NEEDS_HUMAN");
+    expect(prompt).toContain("product");
   });
 
   it("includes prior requirement IDs when a prior report is given", () => {
@@ -98,5 +100,11 @@ describe("buildReconcilerPrompt", () => {
     const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
     expect(prompt).toContain("REMOVE_DEPENDENCY");
     expect(prompt).toContain("free-text");
+  });
+
+  it("includes the SPLIT_ISSUE patch shape with children in the output contract", () => {
+    const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
+    expect(prompt).toContain('"type": "SPLIT_ISSUE"');
+    expect(prompt).toContain('"children"');
   });
 });
