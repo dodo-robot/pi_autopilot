@@ -107,4 +107,17 @@ describe("buildReconcilerPrompt", () => {
     expect(prompt).toContain('"type": "SPLIT_ISSUE"');
     expect(prompt).toContain('"children"');
   });
+
+  it("instructs the model to propose MERGE_DUPLICATE only for true duplicates, not merely related issues", () => {
+    const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
+    expect(prompt).toContain("MERGE_DUPLICATE");
+    expect(prompt).toContain("same actual piece of work");
+  });
+
+  it("includes the MERGE_DUPLICATE patch shape with keep and duplicate fields in the output contract", () => {
+    const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
+    expect(prompt).toContain('"type": "MERGE_DUPLICATE"');
+    expect(prompt).toContain('"keep"');
+    expect(prompt).toContain('"duplicate"');
+  });
 });
