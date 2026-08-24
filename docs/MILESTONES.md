@@ -128,6 +128,26 @@ Implementation plan: `docs/superpowers/plans/2026-08-23-continuous-backlog-intak
 
 ---
 
+## Greenfield bootstrap ✅
+
+**Scope:** `autopilot bootstrap` wraps the `superpowers:brainstorming` skill to
+turn requirements docs into an epic + issue breakdown for a zero-issue repo,
+then writes the plan to GitHub.
+
+- `--plan` phase: bootstrapper Pi session reads requirements docs and
+  proposes an epic/task breakdown, with a size checker that bin-packs
+  oversized tasks into split proposals and a config proposer for a starter
+  `autopilot.yaml`. Plan is rendered to Markdown (Mermaid dependency graph +
+  wave table) and stored via `PlanStore`.
+- `--apply` phase: `ApplyService` writes the stored plan to GitHub via the
+  now-implemented `GitHubPort.createIssue`, idempotently (checked against
+  existing issues before creating).
+- `GitHubPort.createIssue` / `GitHubAdapter.createIssue` — implemented and
+  shared by both the bootstrap apply path and reconciliation's `CREATE_ISSUE`
+  apply-safe patch.
+
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and
@@ -151,39 +171,6 @@ priority; pick from the top.
   application and conflict handling are deferred.
 - **Oversized-task detection driving `SPLIT_ISSUE` proposals.**
   (extend_requirements.md §"Task size and splitting")
-
-### Greenfield bootstrap (no existing backlog) 🔲
-
-Not a violation of spec — `requirements.md` §3 explicitly says the system
-must *not* assume it generates epics/tasks from scratch, and §23 routes
-that path through Superpowers instead (`new requirement → Superpowers →
-autonomous workflow`). But it's a real on-ramp gap worth tracking, and the
-shape of the fix is settled:
-
-- **No entry point for a zero-issue repo.** Every command (`check`,
-  `prepare`, `run`, `analyze`, `reconcile`, and the planned `discover`)
-  requires an existing issue or epic number. A developer with only a
-  `requirements.md` and no GitHub issues has to leave this CLI entirely,
-  run Superpowers by hand, and come back once a first epic exists.
-- **Design direction: a new `bootstrap` command wrapping the
-  `superpowers:brainstorming` skill** (the general-purpose skill, not this
-  repo's own narrow `brainstormer` role — that one only asks clarifying
-  questions about a single already-existing issue) with the explicit goal
-  "produce an epic + issue breakdown from these requirements docs," rather
-  than inventing a bespoke greenfield-planning prompt from scratch.
-- **No new patch/spec types needed.** An "epic" here is already just a
-  plain issue whose body is a Markdown checklist of `- #n` bullets
-  (`isEpicBody`/`collectEpicIssueRefs` in `src/analysis/issue-set.ts`) — no
-  separate GitHub entity to model. `bootstrap`'s output can reuse the
-  `IssueSpec`/`CREATE_ISSUE` shapes already defined in
-  `src/domain/reconciliation.ts`: one root `CREATE_ISSUE` with a
-  checklist-body spec for the epic, one per child task with `epic` pointed
-  at it. Should run dry-run-first, mirroring `analyze`/`reconcile`.
-- **No GitHub issue/epic write capability at all.** `github-adapter.ts`
-  has no `createIssue` method — so even once `apply-safe` lands, neither
-  `bootstrap` nor reconciliation's `CREATE_ISSUE` patch has anywhere to
-  write. This blocks bootstrap *and* the reconciliation apply-safe
-  milestone above; implementing `createIssue` once unblocks both.
 
 ### Concurrency and scheduling (M4) 🔲
 
