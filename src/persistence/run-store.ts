@@ -408,6 +408,17 @@ export class RunStore {
     return row === undefined ? null : mapRunRow(row);
   }
 
+  hasSuccessfulPrOpenForIssue(owner: string, repo: string, issueNumber: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT id FROM runs
+         WHERE owner = ? AND repo = ? AND issue_number = ? AND stage = 'PR_OPEN'
+         LIMIT 1`,
+      )
+      .get(owner, repo, issueNumber) as { id: string } | undefined;
+    return row !== undefined;
+  }
+
   /**
    * The most recently updated run for an issue, regardless of its stage
    * (terminal runs included). `--fresh` uses this to locate the run record

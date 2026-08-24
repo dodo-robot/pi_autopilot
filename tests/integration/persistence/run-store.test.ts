@@ -97,6 +97,20 @@ describe("RunStore", () => {
     expect(store.getActiveRunForIssue("acme", "other", 2)?.id).toBe(b.id);
   });
 
+  it("reports whether an issue has a successful PR_OPEN run", () => {
+    const run = store.createRun({ repository: { owner: "acme", repo: "widgets" }, issueNumber: 42 });
+    store.transition(run.id, "PREFLIGHT", "READINESS_CHECK", null);
+    store.transition(run.id, "READINESS_CHECK", "WORKSPACE_CREATION", null);
+    store.transition(run.id, "WORKSPACE_CREATION", "IMPLEMENTATION", null);
+    store.transition(run.id, "IMPLEMENTATION", "VERIFICATION", null);
+    store.transition(run.id, "VERIFICATION", "INDEPENDENT_REVIEW", null);
+    store.transition(run.id, "INDEPENDENT_REVIEW", "PUBLICATION", null);
+    store.transition(run.id, "PUBLICATION", "PR_OPEN", null);
+
+    expect(store.hasSuccessfulPrOpenForIssue("acme", "widgets", 42)).toBe(true);
+    expect(store.hasSuccessfulPrOpenForIssue("acme", "widgets", 43)).toBe(false);
+  });
+
   it("records attempts with unique attempt numbers per run", () => {
     const run = store.createRun({ repository: repo, issueNumber: 42 });
     const attempt = store.recordAttempt({
