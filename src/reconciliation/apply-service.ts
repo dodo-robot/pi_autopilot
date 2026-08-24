@@ -4,12 +4,17 @@ import type { RepositoryRef } from "../domain/contracts.js";
 import type { GitHubIssue, GitHubPort } from "../github/github-adapter.js";
 import type { ArtifactStore } from "../persistence/artifact-store.js";
 import { collectEpicIssueRefs } from "../analysis/issue-set.js";
-import { appendDependencyToBody, bodyAlreadyDependsOn } from "./apply-dependency.js";
+import {
+  appendDependencyToBody,
+  bodyAlreadyDependsOn,
+  removeManagedDependencyFromBody,
+} from "./apply-dependency.js";
 import {
   confirmMenu,
   renderCreatePreview,
   renderDependencyPreview,
   renderEnrichPreview,
+  renderRemoveDependencyPreview,
   type MenuAnswer,
 } from "./apply-preview.js";
 import { renderReconciliationSection, upsertReconciliationSection } from "./managed-section.js";
@@ -20,6 +25,14 @@ export const REPORT_ARTIFACT = "reconciliation-report.json";
 export const APPLY_ARTIFACT = "reconciliation-apply.json";
 
 const DEFAULT_STALE_HOURS = 168;
+
+/**
+ * requires-approval patch types still offerable through the interactive
+ * confirm menu (never under --yes or a prior "all" answer). Every other
+ * requires-approval type (MARK_STALE, NEEDS_HUMAN) is hard-skipped before
+ * prepare() ever runs.
+ */
+const OFFERABLE_REQUIRES_APPROVAL: ReadonlySet<BacklogPatchType> = new Set(["REMOVE_DEPENDENCY"]);
 
 export interface ApplyOptions {
   /** Unattended: apply auto-safe patches and skip requires-approval patches. */
@@ -103,7 +116,7 @@ export class ApplyService {
     let aborted = false;
 
     for (const patch of sortPatches(report.patches)) {
-      if (patch.policy === "requires-approval") {
+      if (patch.policy === "requires-approval" && !OFFERABLE_REQUIRES_APPROVAL.has(patch.type)) {
         recordEntry(entries, summary, skipEntry(patch, "requires-approval"));
         continue;
       }
@@ -133,7 +146,12 @@ export class ApplyService {
       }
 
       let decision: Decision;
-      if (opts.yes || allRemaining) {
+      if (opts.yes && prepared.patch.policy !== "auto-safe") {
+        // requires-approval patches are never auto-applied under --yes;
+        // an unattended run always needs a human at the prompt for these.
+        recordEntry(entries, summary, skipEntry(prepared.patch, "requires-approval"));
+        continue;
+      } else if (opts.yes || (allRemaining && prepared.patch.policy === "auto-safe")) {
         decision = "apply";
       } else {
         this.onPreview(prepared.previewText);
@@ -202,10 +220,11 @@ export class ApplyService {
         return this.prepareEnrich(patch);
       case "ADD_DEPENDENCY":
         return this.prepareDependency(patch);
+      case "REMOVE_DEPENDENCY":
+        return this.prepareRemoveDependency(patch);
       case "KEEP":
       case "MARK_STALE":
       case "NEEDS_HUMAN":
-      case "REMOVE_DEPENDENCY":
         return { kind: "skip", entry: skipEntry(patch, "requires-approval") };
     }
   }
@@ -288,8 +307,30 @@ export class ApplyService {
     };
   }
 
+  private async prepareRemoveDependency(
+    patch: Extract<ReconciledPatch, { type: "REMOVE_DEPENDENCY" }>,
+  ): Promise<Prepared> {
+    const current = await this.getIssueOrSkipped(patch);
+    if (isApplyEntry(current)) return { kind: "skip", entry: current };
+
+    if (!bodyAlreadyDependsOn(current.body, patch.dependsOn)) {
+      return {
+        kind: "skip",
+        entry: skipEntry(patch, "idempotent", `dependency #${patch.dependsOn} is not recorded; nothing to remove`),
+      };
+    }
+
+    return {
+      kind: "write",
+      patch,
+      entryBase: entryBase(patch, `remove dependency #${patch.dependsOn} from #${patch.issue}`),
+      previewText: renderRemoveDependencyPreview(current.body, patch.dependsOn),
+      applyFresh: () => this.applyRemoveDependencyFresh(patch),
+    };
+  }
+
   private async getIssueOrSkipped(
-    patch: Extract<ReconciledPatch, { type: "ENRICH_ISSUE" | "ADD_DEPENDENCY" }>,
+    patch: Extract<ReconciledPatch, { type: "ENRICH_ISSUE" | "ADD_DEPENDENCY" | "REMOVE_DEPENDENCY" }>,
   ): Promise<GitHubIssue | ApplyEntry> {
     try {
       return await this.deps.github.getIssue(patch.issue);
@@ -413,6 +454,23 @@ export class ApplyService {
     };
   }
 
+  private async applyRemoveDependencyFresh(
+    patch: Extract<ReconciledPatch, { type: "REMOVE_DEPENDENCY" }>,
+  ): Promise<ApplyEntry> {
+    const current = await this.deps.github.getIssue(patch.issue);
+    if (!bodyAlreadyDependsOn(current.body, patch.dependsOn)) {
+      return skipEntry(patch, "idempotent", `dependency #${patch.dependsOn} is not recorded; nothing to remove`);
+    }
+    await this.deps.github.updateIssueBody(
+      patch.issue,
+      removeManagedDependencyFromBody(current.body, patch.dependsOn),
+    );
+    return {
+      ...entryBase(patch, `removed dependency #${patch.dependsOn} from #${patch.issue}`),
+      outcome: { status: "applied" },
+    };
+  }
+
   private async findExistingIssueWithTitle(
     epicNumber: number | null,
     title: string,
@@ -454,8 +512,7 @@ function sortPatches(patches: ReconciledPatch[]): ReconciledPatch[] {
     CREATE_ISSUE: 0,
     ENRICH_ISSUE: 1,
     ADD_DEPENDENCY: 2,
-    // REMOVE_DEPENDENCY intentionally omitted: it cannot be applied today (blocked by requires-approval)
-    // and is skipped upstream. When ApplyService gains support for it, revisit rank ordering here.
+    REMOVE_DEPENDENCY: 3,
   };
   return [...patches].sort((a, b) => (rank[a.type] ?? 10) - (rank[b.type] ?? 10));
 }

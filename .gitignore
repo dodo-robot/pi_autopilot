@@ -2,5 +2,5 @@
 .superpowers/
 node_modules/
 dist/
-
-.worktrees/
+.next/
+.claude/

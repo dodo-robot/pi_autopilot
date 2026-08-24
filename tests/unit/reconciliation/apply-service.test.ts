@@ -486,6 +486,166 @@ describe("ApplyService.apply", () => {
     expect(github.updated).toHaveLength(0);
   });
 
+  it("skips MARK_STALE and NEEDS_HUMAN as requires-approval even when REMOVE_DEPENDENCY is offerable", async () => {
+    github.issues.set(15, makeIssue(15, "OAuth callback", "Depends on:\n- #16 (unsatisfied)"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        { type: "MARK_STALE", issue: 15, reason: "superseded", policy: "requires-approval" },
+        {
+          type: "NEEDS_HUMAN",
+          issue: null,
+          ambiguityType: "MISSING_CONTEXT",
+          reason: "unclear",
+          questions: ["which epic?"],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service().apply(analysisId, opts);
+
+    expect(result.entries.map((e) => e.outcome)).toEqual([
+      { status: "skipped", skippedBy: "requires-approval" },
+      { status: "skipped", skippedBy: "requires-approval" },
+    ]);
+    expect(github.updated).toHaveLength(0);
+  });
+
+  it("offers REMOVE_DEPENDENCY interactively and removes the managed dependency line on apply", async () => {
+    github.issues.set(15, makeIssue(15, "OAuth callback", "Handles OAuth\n\nDepends on:\n- #16 (unsatisfied)"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        { type: "REMOVE_DEPENDENCY", issue: 15, dependsOn: 16, reason: "no longer needed", policy: "requires-approval" },
+      ]),
+    );
+    const previews: string[] = [];
+    let prompts = 0;
+
+    const result = await service({
+      onPreview: (text) => previews.push(text),
+      confirmMenu: async () => {
+        prompts += 1;
+        return "apply";
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(prompts).toBe(1);
+    expect(previews).toEqual(["remove: - #16 (unsatisfied)"]);
+    expect(result.summary.applied).toBe(1);
+    expect(result.entries[0]?.outcome).toEqual({ status: "applied" });
+    expect(github.issues.get(15)?.body).not.toContain("Depends on:");
+  });
+
+  it("never auto-applies REMOVE_DEPENDENCY under --yes, recording it as requires-approval", async () => {
+    github.issues.set(15, makeIssue(15, "OAuth callback", "Depends on:\n- #16 (unsatisfied)"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        { type: "REMOVE_DEPENDENCY", issue: 15, dependsOn: 16, reason: "no longer needed", policy: "requires-approval" },
+      ]),
+    );
+
+    const result = await service().apply(analysisId, opts);
+
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "requires-approval" });
+    expect(github.updated).toHaveLength(0);
+  });
+
+  it("does not fast-forward REMOVE_DEPENDENCY when an earlier patch answered all", async () => {
+    github.issues.set(15, makeIssue(15, "OAuth", "Handles OAuth"));
+    github.issues.set(16, makeIssue(16, "Session storage", "Depends on:\n- #17 (unsatisfied)"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "ENRICH_ISSUE",
+          issue: 15,
+          patch: enrichment("Add OAuth refresh"),
+          reason: "missing criteria",
+          policy: "auto-safe",
+        },
+        { type: "REMOVE_DEPENDENCY", issue: 16, dependsOn: 17, reason: "no longer needed", policy: "requires-approval" },
+      ]),
+    );
+    const answers: string[] = ["all"];
+    let prompts = 0;
+
+    const result = await service({
+      confirmMenu: async () => {
+        prompts += 1;
+        return (answers.shift() as "all") ?? "apply";
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(prompts).toBe(2);
+    expect(result.entries.map((e) => e.patchType)).toEqual(["ENRICH_ISSUE", "REMOVE_DEPENDENCY"]);
+    expect(result.entries[1]?.outcome).toEqual({ status: "applied" });
+  });
+
+  it("skips REMOVE_DEPENDENCY idempotently when the managed line is already gone from current state", async () => {
+    github.issues.set(15, makeIssue(15, "OAuth callback", "Handles OAuth"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        { type: "REMOVE_DEPENDENCY", issue: 15, dependsOn: 16, reason: "stale", policy: "requires-approval" },
+      ]),
+    );
+
+    const result = await service({ confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
+
+    expect(result.entries[0]?.outcome).toEqual({
+      status: "skipped",
+      skippedBy: "idempotent",
+    });
+    expect(github.updated).toHaveLength(0);
+  });
+
+  it("previews REMOVE_DEPENDENCY without mutation when previewOnly is set", async () => {
+    github.issues.set(15, makeIssue(15, "OAuth callback", "Depends on:\n- #16 (unsatisfied)"));
+    const previews: string[] = [];
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        { type: "REMOVE_DEPENDENCY", issue: 15, dependsOn: 16, reason: "no longer needed", policy: "requires-approval" },
+      ]),
+    );
+
+    const result = await service({ onPreview: (text) => previews.push(text) }).apply(analysisId, {
+      yes: true,
+      previewOnly: true,
+    });
+
+    expect(result.summary.previewed).toBe(1);
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "preview-only" });
+    expect(previews).toEqual(["remove: - #16 (unsatisfied)"]);
+    expect(github.updated).toHaveLength(0);
+  });
+
+  it("sorts REMOVE_DEPENDENCY after ADD_DEPENDENCY when both are offerable in one run", async () => {
+    github.issues.set(15, makeIssue(15, "OAuth", "Handles OAuth"));
+    github.issues.set(16, makeIssue(16, "Session storage", "Depends on:\n- #17 (unsatisfied)"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        { type: "REMOVE_DEPENDENCY", issue: 16, dependsOn: 17, reason: "no longer needed", policy: "requires-approval" },
+        { type: "ADD_DEPENDENCY", issue: 15, dependsOn: 16, reason: "needs #16", policy: "auto-safe" },
+      ]),
+    );
+
+    const result = await service({ confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
+
+    expect(result.entries.map((e) => e.patchType)).toEqual(["ADD_DEPENDENCY", "REMOVE_DEPENDENCY"]);
+  });
+
   it("enforces the report staleness guard unless force is set", async () => {
     github.issues.set(15, issue15());
     await artifacts.writeJson(
