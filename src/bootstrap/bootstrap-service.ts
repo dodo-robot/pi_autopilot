@@ -44,7 +44,7 @@ export class BootstrapSizeError extends Error {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 15 * 60_000;
+const DEFAULT_TIMEOUT_MS = 30 * 60_000;
 
 export class BootstrapService {
   private readonly timeoutMs: number;
