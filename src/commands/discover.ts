@@ -5,6 +5,7 @@ import {
   reconcileReadyLabel,
   AGENT_READY_LABEL,
   AGENT_IN_PROGRESS_LABEL,
+  SPLIT_LABEL,
   type LabelAction,
 } from "../analysis/label-reconciliation.js";
 import type { ResolvedRoleModel } from "../config/load-config.js";
@@ -99,6 +100,7 @@ export function registerDiscoverCommand(program: Command, deps: DiscoverCommandD
             isReady: issue.classification === "READY",
             hasReadyLabel: labels.includes(AGENT_READY_LABEL),
             hasInProgressLabel: labels.includes(AGENT_IN_PROGRESS_LABEL),
+            hasSplitLabel: labels.includes(SPLIT_LABEL),
           });
           try {
             if (action === "labeled") await addLabel(issue.issueNumber, AGENT_READY_LABEL);

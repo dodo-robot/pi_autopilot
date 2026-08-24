@@ -94,6 +94,22 @@ describe("discover command", () => {
     expect(removeLabel).not.toHaveBeenCalled();
   });
 
+  it("never touches labels on an issue with the split label, even when classified READY", async () => {
+    const addLabel = vi.fn();
+    const removeLabel = vi.fn();
+    const deps: DiscoverCommandDeps = {
+      analyze: async () => baseReport(),
+      listLabels: async () => ["split"],
+      addLabel,
+      removeLabel,
+      stdout: vi.fn(),
+      setExitCode: vi.fn(),
+    };
+    await makeProgram(deps).parseAsync(["discover", "42"], { from: "user" });
+    expect(addLabel).not.toHaveBeenCalled();
+    expect(removeLabel).not.toHaveBeenCalled();
+  });
+
   it("includes labelAction in --json output", async () => {
     const messages: string[] = [];
     const deps: DiscoverCommandDeps = {
