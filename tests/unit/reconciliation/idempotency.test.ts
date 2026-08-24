@@ -61,6 +61,36 @@ describe("applyIdempotencyDowngrades", () => {
     expect(result.type).toBe("ADD_DEPENDENCY");
   });
 
+  it("downgrades a REMOVE_DEPENDENCY patch to KEEP when the managed marker is already absent", () => {
+    const patches: BacklogPatch[] = [
+      { type: "REMOVE_DEPENDENCY", issue: 17, dependsOn: 15, reason: "no longer needed" },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      { number: 17, title: "Validate sessions", body: "no dependency markers here" },
+    ]);
+    expect(result).toMatchObject({ type: "KEEP", issue: 17 });
+  });
+
+  it("leaves a REMOVE_DEPENDENCY patch unchanged when the managed marker is still present", () => {
+    const patches: BacklogPatch[] = [
+      { type: "REMOVE_DEPENDENCY", issue: 17, dependsOn: 15, reason: "no longer needed" },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      { number: 17, title: "Validate sessions", body: "Depends on:\n- #15 (unsatisfied)" },
+    ]);
+    expect(result.type).toBe("REMOVE_DEPENDENCY");
+  });
+
+  it("downgrades a REMOVE_DEPENDENCY patch to KEEP when the dependency is only present as free text", () => {
+    const patches: BacklogPatch[] = [
+      { type: "REMOVE_DEPENDENCY", issue: 17, dependsOn: 15, reason: "no longer needed" },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      { number: 17, title: "Validate sessions", body: "depends on: #15\n" },
+    ]);
+    expect(result).toMatchObject({ type: "KEEP", issue: 17 });
+  });
+
   it("downgrades a CREATE_ISSUE patch to KEEP of the matching issue on an exact (case-insensitive) title match", () => {
     const patches: BacklogPatch[] = [
       {

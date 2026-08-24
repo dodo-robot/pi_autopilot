@@ -79,6 +79,23 @@ export function applyIdempotencyDowngrades(
       return patch;
     }
 
+    if (patch.type === "REMOVE_DEPENDENCY") {
+      const current = byNumber.get(patch.issue);
+      if (current === undefined) return patch;
+      MANAGED_DEPENDENCY_PATTERN.lastIndex = 0;
+      const stillPresent = [...current.body.matchAll(MANAGED_DEPENDENCY_PATTERN)].some(
+        (match) => dependencyNumberFromMatch(match) === patch.dependsOn,
+      );
+      if (!stillPresent) {
+        return {
+          type: "KEEP",
+          issue: patch.issue,
+          reason: `dependency #${patch.dependsOn} is not recorded in managed form; nothing to remove`,
+        };
+      }
+      return patch;
+    }
+
     if (patch.type === "CREATE_ISSUE") {
       const normalizedTarget = patch.spec.title.trim().toLowerCase();
       const duplicate = issues.find(
