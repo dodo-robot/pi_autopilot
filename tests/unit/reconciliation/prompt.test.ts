@@ -87,4 +87,16 @@ describe("buildReconcilerPrompt", () => {
     expect(prompt).toContain("REQ-AUTH-004");
     expect(prompt).toContain("Reuse these IDs");
   });
+
+  it("includes the REMOVE_DEPENDENCY patch shape in the output contract", () => {
+    const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
+    expect(prompt).toContain('"type": "REMOVE_DEPENDENCY"');
+    expect(prompt).toContain('"dependsOn"');
+  });
+
+  it("instructs the reconciler never to propose REMOVE_DEPENDENCY against a free-text dependency line", () => {
+    const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
+    expect(prompt).toContain("REMOVE_DEPENDENCY");
+    expect(prompt).toContain("free-text");
+  });
 });

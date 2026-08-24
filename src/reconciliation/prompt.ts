@@ -75,6 +75,7 @@ When your analysis is complete, call the submit_result tool exactly once with a 
     { "type": "ENRICH_ISSUE", "issue": 123, "reason": "...", "patch": { "goal": "...", "sourceRequirements": ["REQ-AUTH-001"], "acceptanceCriteria": ["..."], "constraints": [], "nonGoals": [], "validation": ["..."], "relevantAreas": ["src/auth/"] } },
     { "type": "CREATE_ISSUE", "epic": ${epic.number}, "reason": "...", "spec": { "title": "...", "enrichment": { "goal": "...", "sourceRequirements": [], "acceptanceCriteria": [], "constraints": [], "nonGoals": [], "validation": [], "relevantAreas": [] } } },
     { "type": "ADD_DEPENDENCY", "issue": 123, "dependsOn": 120, "reason": "..." },
+    { "type": "REMOVE_DEPENDENCY", "issue": 123, "dependsOn": 120, "reason": "..." },
     { "type": "MARK_STALE", "issue": 123, "reason": "..." },
     { "type": "NEEDS_HUMAN", "issue": 123, "ambiguityType": "ENGINEERING" | "PRODUCT" | "MISSING_CONTEXT" | "CONFLICTING_REQUIREMENTS", "reason": "...", "questions": ["..."] }
   ]
@@ -86,6 +87,7 @@ Rules
 - Every issue in the epic must be classified with exactly one patch: KEEP when it is correct and complete as-is, ENRICH_ISSUE when it needs the machine-owned execution-contract fields added, MARK_STALE when the repository already contains an equivalent implementation (name the evidence in "reason"), or NEEDS_HUMAN when you cannot decide without a product decision.
 - Propose CREATE_ISSUE only for a requirement with no corresponding issue anywhere in the epic.
 - Propose ADD_DEPENDENCY when one issue's work genuinely cannot start before another completes and no dependency is currently recorded.
+- Propose REMOVE_DEPENDENCY only when a currently-recorded managed-form dependency (the "- #N (unsatisfied)" bullet, not free-text prose like "depends on #12") no longer reflects a real ordering constraint — for example, the dependency was satisfied by a rearchitecting that removed the need for it, or was recorded in error. Never propose it against a dependency you only see written as free-text human prose.
 - ENGINEERING ambiguity (which module owns a behavior, whether an abstraction already exists) does NOT require NEEDS_HUMAN: resolve it by inspecting the repository.
 - PRODUCT ambiguity, MISSING_CONTEXT (a requirement you cannot locate enough information about), and CONFLICTING_REQUIREMENTS (two requirement documents disagree) MUST produce a NEEDS_HUMAN patch with specific questions.
 - An issue is the right size when it has one primary outcome, fits one isolated agent session, and its acceptance criteria are independently testable. If an issue's scope spans multiple independent behavioral outcomes (not just multiple implementation steps toward one outcome), it is oversized: this milestone cannot propose SPLIT_ISSUE, so raise a NEEDS_HUMAN patch (ambiguityType "ENGINEERING" if the split itself is mechanical, "PRODUCT" if which slice ships first is a product call) naming the outcomes you would split it into, rather than silently keeping or enriching it as one issue.
