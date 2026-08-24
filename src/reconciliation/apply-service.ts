@@ -454,6 +454,8 @@ function sortPatches(patches: ReconciledPatch[]): ReconciledPatch[] {
     CREATE_ISSUE: 0,
     ENRICH_ISSUE: 1,
     ADD_DEPENDENCY: 2,
+    // REMOVE_DEPENDENCY intentionally omitted: it cannot be applied today (blocked by requires-approval)
+    // and is skipped upstream. When ApplyService gains support for it, revisit rank ordering here.
   };
   return [...patches].sort((a, b) => (rank[a.type] ?? 10) - (rank[b.type] ?? 10));
 }

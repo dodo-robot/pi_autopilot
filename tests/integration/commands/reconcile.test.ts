@@ -293,6 +293,34 @@ describe("autopilot reconcile", () => {
     expect(output).toContain("#18 — superseded by httpOnly cookies");
   });
 
+  it("includes REMOVE_DEPENDENCY patches in the human-readable report", async () => {
+    const report: ReconciliationReport = {
+      ...FIXED_REPORT,
+      patches: [
+        {
+          type: "REMOVE_DEPENDENCY",
+          issue: 15,
+          dependsOn: 20,
+          reason: "no longer needed",
+          policy: "requires-approval",
+        },
+      ],
+    };
+    const lines: string[] = [];
+    const deps = baseDeps({
+      stdout: (line) => lines.push(line),
+      createReconciliation: () => ({ reconcile: async () => report }),
+    });
+    const program = buildProgram(deps);
+    await program.parseAsync(["node", "autopilot", "reconcile", "12"]);
+
+    const output = lines.join("\n");
+    // REMOVE_DEPENDENCY group heading must appear
+    expect(output).toContain("REMOVE_DEPENDENCY");
+    // The patch must be rendered with the correct format from describePatch
+    expect(output).toContain("#15 no longer depends on #20 — no longer needed");
+  });
+
   it("drives the real ReconciliationService end-to-end through a fake pi executable", async () => {
     const mixedEpic = makeIssue(
       12,
