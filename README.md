@@ -69,6 +69,12 @@ the implementation/verification/review pipeline, and opens a PR on success.
 | `run <issue>` | Execute a ready issue end to end (`--fresh` discards any prior run) |
 | `analyze <ref>` | Assess backlog readiness across an epic or issue set (read-only) |
 | `reconcile <epic>` | Propose a backlog patch plan against requirement docs and the repository (read-only, always dry-run) |
+| `bootstrap --plan` / `--apply <plan-id>` | Seed a project backlog from requirement documents: infer epics/issues/dependency waves via the brainstorming skill, then apply them to GitHub as a Projects v2 board + issues |
+
+> **`bootstrap --plan` is interactive (HITL).** It loads the superpowers
+> brainstorming skill and asks the operator clarifying questions one at a time
+> as it structures the backlog. Run it in a terminal; answer each
+> `[bootstrapper asks]` prompt on the same line. There is no auto-answer mode.
 | `status <run-id>` | Current stage and next valid action |
 | `inspect <run-id>` | Snapshot, evidence, model usage, history |
 | `resume <run-id>` | Fresh correction attempt for a `BLOCKED` or `FAILED` run |
