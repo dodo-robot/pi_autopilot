@@ -11,9 +11,11 @@ their own, separate design). `MARK_READY` — also on that deferred list —
 is intentionally excluded from all three efforts; see §6.
 
 This spec covers schema, deterministic guards, patch-policy
-classification, apply-service writes, prompt contract, and testing.
-Implementation plan follows in a separate document once this spec is
-approved.
+classification, the report-only apply-side primitives, prompt contract,
+and testing. Wiring those primitives into `ApplyService` for an actual
+GitHub write is deferred to a follow-up (§3.6, §6) that first fixes a
+pre-existing `ApplyService` gap unrelated to this patch type. Implementation
+plan follows in a separate document once this spec is approved.
 
 ## 2. Precedent: how `ADD_DEPENDENCY` works today
 
@@ -125,7 +127,41 @@ Add a rule alongside the existing `ADD_DEPENDENCY` rule:
 > the need for it, or was recorded in error. Never propose it against a
 > dependency you only see written as free-text human prose.
 
-### 3.6 Apply-service writes
+### 3.6 Apply-service writes — deferred by a pre-existing `ApplyService` gap
+
+`ApplyService.apply()`'s main loop currently skips **every** `requires-approval`
+patch unconditionally, before it ever reaches `prepare()`:
+
+```ts
+if (patch.policy === "requires-approval") {
+  recordEntry(entries, summary, skipEntry(patch, "requires-approval"));
+  continue;
+}
+```
+
+This predates this feature — it already means a hypothetical interactive
+approval flow for `MARK_STALE`/`NEEDS_HUMAN` would be similarly blocked.
+Since `REMOVE_DEPENDENCY` is classified `requires-approval` (§3.3), it hits
+this same gate and is skipped exactly like `MARK_STALE`/`NEEDS_HUMAN` are
+today — never reaching a write, regardless of `opts.yes` or an interactive
+"apply" answer.
+
+Fixing that gate (so some `requires-approval` types can still be applied
+via explicit interactive confirmation while others, like `MARK_STALE`,
+stay hard-skipped) is a cross-cutting change to code every other patch
+type also depends on — out of proportion for this single patch type and
+explicitly deferred (§6). This spec therefore stops at making
+`REMOVE_DEPENDENCY` fully correct as a **report-only** patch: proposed by
+the reconciler, schema-validated, policy-classified, idempotency-guarded,
+and visible in the human/`--json` reconciliation report — but not yet
+writable through `reconcile-apply`, matching where `MARK_STALE`/`NEEDS_HUMAN`
+already sit today.
+
+The apply-side primitives below are still designed now (so the follow-up
+that fixes the `ApplyService` gate has no new design work left to do), but
+are implemented as free functions with direct unit tests rather than wired
+into `ApplyService.prepare()`'s switch — wiring them in is the follow-up's
+first step once the gate itself is fixed.
 
 New body-edit primitive in `src/reconciliation/apply-dependency.ts`:
 
@@ -146,19 +182,14 @@ Behavior:
   guard (§3.4) downgrades that case to `KEEP` before `ApplyService` is
   reached, but the function stays total/safe on its own.
 
-New `ApplyService` methods, structurally identical to
-`prepareDependency`/`applyDependencyFresh`:
-
-- `prepareRemoveDependency`: fetches the issue fresh, re-checks the
-  managed-form line is still present against *current* state (protects
-  against a concurrent edit between report generation and apply — same
-  pattern every other patch type already follows), skips idempotently if
-  already gone, otherwise stages a write with a rendered preview.
-- `applyRemoveDependencyFresh`: re-fetches once more immediately before
-  writing (matching `applyDependencyFresh`'s own fresh-fetch), re-checks,
-  writes via `updateIssueBody(issue, removeManagedDependencyFromBody(body, dependsOn))`.
-
-Both added to the `switch` in `ApplyService.prepare()`.
+Not implemented in this task (deferred to the `ApplyService`-gate follow-up,
+§6): `prepareRemoveDependency`/`applyRemoveDependencyFresh` methods on
+`ApplyService`, structurally identical to `prepareDependency`/
+`applyDependencyFresh` — fetch the issue fresh, re-check the managed-form
+line is still present against *current* state, skip idempotently if
+already gone, otherwise write via
+`updateIssueBody(issue, removeManagedDependencyFromBody(body, dependsOn))`.
+Recorded here so the follow-up implements exactly this, not a redesign.
 
 ### 3.7 Preview rendering
 
@@ -202,14 +233,28 @@ Mirrors existing `ADD_DEPENDENCY` coverage 1:1:
   present.
 - **`patch-policy.test.ts`**: `REMOVE_DEPENDENCY` classifies as
   `requires-approval`.
-- **`apply-service.test.ts`**: prepare/apply happy path (removes the
-  line via a real `updateIssueBody` call); idempotent skip; concurrent-edit
-  re-check (dependency already removed by the time apply runs).
 - **Schema test**: round-trips the new discriminated-union variant
   through `BacklogPatchSchema`.
+- **`prompt.test.ts`**: `buildReconcilerPrompt` output includes the
+  `REMOVE_DEPENDENCY` example and rule text.
+
+No `apply-service.test.ts` coverage in this task — `ApplyService` isn't
+modified (§3.6); its existing tests are unaffected and continue to pass
+unmodified.
 
 ## 6. Out of scope
 
+- **Wiring `REMOVE_DEPENDENCY` into `ApplyService`.** Deferred (§3.6) to a
+  follow-up that first fixes `ApplyService.apply()`'s pre-existing gate of
+  unconditionally skipping every `requires-approval` patch before
+  `prepare()` runs — a cross-cutting change affecting every patch type,
+  out of proportion for this single patch type. Until that follow-up
+  lands, `REMOVE_DEPENDENCY` is report-only: proposed, validated,
+  policy-classified, and idempotency-guarded, but not yet applyable
+  through `reconcile-apply` — the same place `MARK_STALE`/`NEEDS_HUMAN`
+  already sit today. `removeManagedDependencyFromBody` and
+  `renderRemoveDependencyPreview` are still built and unit-tested in this
+  task so the follow-up only has to wire them in, not design them.
 - **Free-text (`LINE_DEPENDENCY_PATTERN`) dependency-line removal.**
   Deliberately excluded (§3.1); guarded deterministically, not silently
   dropped. A future extension could add a distinct, more careful patch
