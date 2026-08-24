@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../../../src/persistence/artifact-store.js";
 import { appPaths } from "../../../src/platform/paths.js";
 import { BootstrapService, BootstrapSizeError } from "../../../src/bootstrap/bootstrap-service.js";
+import type { BootstrapServiceDeps } from "../../../src/bootstrap/bootstrap-service.js";
 import type { BootstrapperResult } from "../../../src/domain/contracts.js";
 import type { PiExecution, PiRunRequest } from "../../../src/pi/pi-runner.js";
 import type { RepositoryContext } from "../../../src/github/repository-context.js";
@@ -23,7 +24,7 @@ const repository: RepositoryContext = {
 };
 
 const config = {
-  bootstrap: { tokenThreshold: 80_000, requirementsPaths: undefined },
+  bootstrap: { tokenThreshold: 80_000, requirementsPaths: undefined, skillPaths: [] },
   agentPolicy: { protectedPaths: [] },
 } as unknown as AutopilotConfig;
 
@@ -96,5 +97,57 @@ describe("BootstrapService.plan", () => {
     const artifacts = new ArtifactStore(paths);
     const raw = await artifacts.readJson(planId, "plan.json");
     expect((raw as { planId: string }).planId).toBe(planId);
+  });
+
+  it("answers a bootstrapper question via the onQuestion seam", async () => {
+    const { service, pi } = makeService();
+    // Patch the pi fixture to emit a question file during the run and wait for
+    // the answer before submitting the result.
+    const originalFake = pi;
+    originalFake.calls = [];
+    originalFake.run = async (req: PiRunRequest): Promise<PiExecution> => {
+      originalFake.calls.push(req);
+      const askDir = path.join(req.diagnosticsDir, "ask");
+      mkdirSync(askDir, { recursive: true });
+      const questionFile = path.join(askDir, "000-question.json");
+      writeFileSync(questionFile, JSON.stringify({ seq: 0, question: "Which scope?", context: "look" }), "utf8");
+      // Wait for the pump to write the answer (simulates ask_human blocking).
+      const answerFile = path.join(askDir, "000-answer.json");
+      const deadline = Date.now() + 3_000;
+      while (!existsSync(answerFile) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!existsSync(answerFile)) {
+        throw new Error("answer never arrived");
+      }
+      return {
+        result: goodResult,
+        exitCode: 0,
+        durationMs: 100,
+        stdout: "",
+        stderr: "",
+        resultPath: path.join(req.diagnosticsDir, "result.json"),
+        sessionDir: req.sessionDir,
+      };
+    };
+
+    // Swap in a service wired with onQuestion.
+    const paths = (await import("../../../src/platform/paths.js")).appPaths(tmpDir);
+    const artifacts = new ArtifactStore(paths);
+    const svc = new BootstrapService({
+      repository,
+      config: { ...config, bootstrap: { tokenThreshold: 80_000, skillPaths: [] } } as unknown as AutopilotConfig,
+      pi: originalFake as unknown as BootstrapServiceDeps["pi"],
+      artifacts,
+      paths,
+      bootstrapperModel: model,
+      planId: "bootstrap-20260823-test01",
+      now: () => "2026-08-23T10:00:00Z",
+      onQuestion: async (q) => {
+        expect(q.question).toBe("Which scope?");
+        return "M1 only";
+      },
+    });
+    await svc.plan([doc]);
   });
 });

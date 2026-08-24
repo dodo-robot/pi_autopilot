@@ -1,4 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, realpathSync, mkdirSync, existsSync } from "node:fs";
+import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -17,6 +19,12 @@ interface GuardEnvelope {
   allowedCommands: string[];
   protectedPaths: string[];
   allowedTools: string[];
+  /**
+   * Absolute path allow-list for reads of skill files that live outside the
+   * worktree (e.g. ~/.pi/agent/.../skills). Only reads are permitted here;
+   * these paths are never writable by any role.
+   */
+  skillPaths: string[];
 }
 
 /** Built-in tools the guard intercepts. */
@@ -77,6 +85,12 @@ function loadEnvelope(): GuardEnvelope {
   ) {
     fail("invalid guard envelope: allowedTools missing");
   }
+  if (env.skillPaths !== undefined &&
+    (!Array.isArray(env.skillPaths) ||
+      env.skillPaths.some((entry) => typeof entry !== "string"))
+  ) {
+    fail("invalid guard envelope: skillPaths must be a string array");
+  }
 
   return {
     worktree: env.worktree,
@@ -85,13 +99,37 @@ function loadEnvelope(): GuardEnvelope {
     allowedCommands: env.allowedCommands as string[],
     protectedPaths: env.protectedPaths as string[],
     allowedTools: env.allowedTools as string[],
+    skillPaths: (env.skillPaths as string[]) ?? [],
   };
 }
 
 /**
- * Pi guard extension. Blocks disallowed tool calls and exposes a
- * `submit_result` tool that persists the role's structured outcome exactly
- * once. Loaded by the orchestrator's Pi sessions via `--extension`.
+ * Returns true when `candidate` resolves to a path under one of the allow-listed
+ * skill paths. The worktree root is resolved to realpath so symlinked skills
+ * (e.g. ~/.pi on a symlinked home) compare correctly.
+ */
+function isSkillPath(worktree: string, skillPaths: string[], candidate: string): boolean {
+  if (skillPaths.length === 0) return false;
+  let candidateAbs: string;
+  if (path.isAbsolute(candidate)) {
+    candidateAbs = candidate;
+  } else {
+    candidateAbs = path.join(realpathSync(worktree), candidate);
+  }
+  const resolved = realpathSync(candidateAbs);
+  for (const raw of skillPaths) {
+    const base = realpathSync(raw);
+    if (resolved === base || resolved.startsWith(`${base}${path.sep}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Pi guard extension. Blocks disallowed tool calls, exposes a `submit_result`
+ * tool, and exposes an `ask_human` tool that surfaces a question and blocks
+ * until an operator answers. Loaded by Pi sessions via `--extension`.
  */
 export default function guardExtension(pi: ExtensionAPI): void {
   const envelope = loadEnvelope();
@@ -131,6 +169,13 @@ export default function guardExtension(pi: ExtensionAPI): void {
     }
     if (typeof input.path !== "string") {
       return { block: true, reason: "autopilot policy: tool path must be a string" };
+    }
+
+    // A read of a skill path that is explicitly allow-listed is permitted even
+    // though it lives outside the worktree (e.g. ~/.pi/agent/.../skills). This
+    // is read-only; skill paths are never writable.
+    if (isSkillPath(envelope.worktree, envelope.skillPaths, input.path)) {
+      return undefined;
     }
 
     try {
@@ -177,6 +222,84 @@ export default function guardExtension(pi: ExtensionAPI): void {
         content: [{ type: "text", text: "Result accepted" }],
         details: { submitted: true },
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "ask_human",
+    label: "Ask the operator a question",
+    description:
+      "Ask the human operator a short clarifying question and block until they " +
+      "answer. Call it whenever you need to resolve a genuinely ambiguous product " +
+      "decision before continuing. It returns the operator's reply; the session " +
+      "pauses until then.",
+    parameters: Type.Object({
+      question: Type.String({
+        description: "The question to ask the operator",
+      }),
+      context: Type.Optional(
+        Type.String({
+          description: "Optional surrounding context the operator should see",
+        }),
+      ),
+    }),
+    async execute(_id, params, signal) {
+      const askDir = path.join(path.dirname(envelope.resultPath), "ask");
+      mkdirSync(askDir, { recursive: true });
+      // Pick the next index. Concurrent questions must not collide (the flag
+      // "wx" makes each write atomic), so probe for the next free slot.
+      let index = 0;
+      for (;;) {
+        const probe = path.join(askDir, `${String(index).padStart(3, "0")}-question.json`);
+        const answerProbe = path.join(askDir, `${String(index).padStart(3, "0")}-answer.json`);
+        if (!existsSync(probe) && !existsSync(answerProbe)) break;
+        index += 1;
+      }
+      const seq = String(index).padStart(3, "0");
+      const questionFile = path.join(askDir, `${seq}-question.json`);
+      const answerFile = path.join(askDir, `${seq}-answer.json`);
+      try {
+        writeFileSync(
+          questionFile,
+          JSON.stringify({
+            seq: index,
+            question: params.question,
+            context: params.context ?? "",
+          }),
+          { flag: "wx", mode: 0o600 },
+        );
+      } catch {
+        return {
+          content: [{ type: "text", text: "Failed to write question." }],
+          details: { asked: false, seq: index },
+          isError: true,
+        };
+      }
+      // Block until the operator's answer arrives. Honor the abort signal.
+      for (;;) {
+        if (signal?.aborted) {
+          return {
+            content: [{ type: "text", text: "Question aborted." }],
+            details: { asked: false, seq: index },
+            isError: true,
+          };
+        }
+        if (existsSync(answerFile)) {
+          let answer: string;
+          try {
+            const raw = readFileSync(answerFile, "utf8");
+            answer = (JSON.parse(raw) as { answer: string }).answer;
+          } catch {
+            answer = "";
+          }
+          return {
+            content: [{ type: "text", text: answer }],
+            details: { asked: true, seq: index },
+            isError: false,
+          };
+        }
+        await sleep(150);
+      }
     },
   });
 }

@@ -78,6 +78,7 @@ function setupGuard(
       "write",
       "submit_result",
     ],
+    skillPaths: [],
     ...overrides,
   };
   writeFileSync(envelopePath, JSON.stringify(envelope), "utf8");
@@ -289,5 +290,93 @@ describe("guard extension", () => {
     expect(verdict.isError).not.toBe(true);
     expect(existsSync(setup.resultPath)).toBe(true);
     expect(readFileSync(setup.resultPath, "utf8")).toBe("{not json");
+  });
+
+  it("allows reads of a skill path listed in skillPaths", async () => {
+    const skillDir = mkdtempSync(path.join(tmpdir(), "ap-skill-"));
+    dirs.push(skillDir);
+    writeFileSync(path.join(skillDir, "SKILL.md"), "# Skill");
+    const setup = setupGuard({ skillPaths: [skillDir] });
+    const mod = await import("../../../src/pi/guard-extension.js");
+    const mock = mockPi();
+    mod.default(mock.pi);
+    const handler = toolCallHandler(mock);
+    expect(
+      await handler({
+        toolName: "read",
+        toolCallId: "14",
+        input: { path: path.join(skillDir, "SKILL.md") },
+      }),
+    ).toBeUndefined();
+    expect(setup.dir).toBeTruthy();
+  });
+
+  it("still blocks reads of paths outside worktree when not in skillPaths", async () => {
+    const skillDir = mkdtempSync(path.join(tmpdir(), "ap-skill-"));
+    dirs.push(skillDir);
+    writeFileSync(path.join(skillDir, "SKILL.md"), "# Skill");
+    setupGuard({ skillPaths: [skillDir] });
+    const mod = await import("../../../src/pi/guard-extension.js");
+    const mock = mockPi();
+    mod.default(mock.pi);
+    const handler = toolCallHandler(mock);
+    // A different dir, not listed, is still denied.
+    const other = mkdtempSync(path.join(tmpdir(), "ap-other-"));
+    dirs.push(other);
+    writeFileSync(path.join(other, "x.txt"), "x");
+    expect(
+      await handler({ toolName: "read", toolCallId: "15", input: { path: path.join(other, "x.txt") } }),
+    ).toMatchObject({ block: true });
+  });
+
+  it("ask_human writes a question and blocks until an answer appears", async () => {
+    const setup = setupGuard();
+    const mod = await import("../../../src/pi/guard-extension.js");
+    const mock = mockPi();
+    mod.default(mock.pi);
+    const askTool = mock.tools.find((t) => t.name === "ask_human");
+    expect(askTool).toBeDefined();
+
+    const askDir = path.join(path.dirname(setup.resultPath), "ask");
+    const exec = askTool!.execute("ask-1", { question: "Which scope?" });
+    // First write the question file; then wait for the answer. Use a short wait
+    // to let the tool observe the question file and block.
+    await new Promise((r) => setTimeout(r, 150));
+    const files = require("node:fs").readdirSync(askDir);
+    const questionFile = files.find((f: string) => f.endsWith("-question.json"));
+    expect(questionFile).toBeDefined();
+    const q = JSON.parse(readFileSync(path.join(askDir, questionFile!), "utf8"));
+    expect(q.question).toBe("Which scope?");
+
+    // Write the answer; the blocked execute should resolve with the answer.
+    const answerFile = questionFile!.replace("-question.json", "-answer.json");
+    writeFileSync(path.join(askDir, answerFile), JSON.stringify({ answer: "M1 only" }), "utf8");
+
+    const result = await exec;
+    expect(result.isError).not.toBe(true);
+    const textContent = result.content.find((c) => c.type === "text");
+    expect(textContent?.text).toContain("M1 only");
+  });
+
+  it("ask_human sequences questions with an increasing index", async () => {
+    const setup = setupGuard();
+    const mod = await import("../../../src/pi/guard-extension.js");
+    const mock = mockPi();
+    mod.default(mock.pi);
+    const askTool = mock.tools.find((t) => t.name === "ask_human");
+    const askDir = path.join(path.dirname(setup.resultPath), "ask");
+
+    const e1 = askTool!.execute("a", { question: "Q1" });
+    await new Promise((r) => setTimeout(r, 120));
+    const e2 = askTool!.execute("b", { question: "Q2" });
+    await new Promise((r) => setTimeout(r, 120));
+    const files = require("node:fs").readdirSync(askDir).filter((f: string) => f.endsWith("-question.json"));
+    expect(files.sort()).toEqual(["000-question.json", "001-question.json"]);
+    // Let both settle; resolve the promises to avoid dangling handles.
+    const answerFile0 = path.join(askDir, "000-answer.json");
+    const answerFile1 = path.join(askDir, "001-answer.json");
+    writeFileSync(answerFile0, JSON.stringify({ answer: "A1" }), "utf8");
+    writeFileSync(answerFile1, JSON.stringify({ answer: "A2" }), "utf8");
+    await Promise.all([e1, e2]);
   });
 });

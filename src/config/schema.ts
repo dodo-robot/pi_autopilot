@@ -124,6 +124,7 @@ export const AutopilotConfigSchema = z.object({
     .object({
       tokenThreshold: z.number().int().positive().default(80_000),
       requirementsPaths: z.array(z.string()).optional(),
+      skillPaths: z.array(z.string()).optional(),
     })
     .prefault({}),
   scheduler: SchedulerConfigSchema,

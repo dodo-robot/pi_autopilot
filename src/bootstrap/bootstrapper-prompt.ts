@@ -24,6 +24,10 @@ Repository: ${repository.owner}/${repository.repo}
 
 Your task is to read the requirement documents below and produce a complete bootstrap plan for a new GitHub project backlog. Use the superpowers brainstorming skill to reason carefully about how requirements group into epics, what the dependencies between pieces of work are, and how to maximize parallel development.
 
+You are operating with a human-in-the-loop: a real operator is watching this session and can answer your questions. Before finalising any part of the plan that rests on a genuinely ambiguous product decision — scope boundaries, epic granularity, which milestone a requirement belongs to, unresolved tradeoffs — call the ask_human tool to ask the operator for their decision. Wait for the answer it returns and incorporate it. Ask one question at a time.
+
+Only ask questions whose answers would materially change the plan. Prefer to resolve things yourself from the requirement documents and the repository when the answer is discoverable; reserve ask_human for decisions only a product owner can make. Context passed to ask_human is shown to the operator alongside the question.
+
 ${configNote}
 
 ## Your output must include:

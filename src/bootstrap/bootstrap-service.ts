@@ -1,4 +1,5 @@
 import { writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import type { ResolvedRoleModel } from "../config/load-config.js";
 import type { AutopilotConfig } from "../config/schema.js";
@@ -9,6 +10,7 @@ import type { ArtifactStore } from "../persistence/artifact-store.js";
 import type { PiExecution, PiRunRequest } from "../pi/pi-runner.js";
 import type { AppPaths } from "../platform/paths.js";
 import type { RequirementDoc } from "../reconciliation/prompt.js";
+import { AnswerPump } from "./answer-pump.js";
 import { buildBootstrapperPrompt } from "./bootstrapper-prompt.js";
 import { proposeConfig } from "./config-proposer.js";
 import { checkSize, formatSizeError } from "./size-checker.js";
@@ -16,6 +18,7 @@ import type { SizeFail } from "./size-checker.js";
 import { PlanStore, generatePlanId } from "./plan-store.js";
 import { renderPlan } from "./plan-renderer.js";
 import type { BootstrapPlan } from "./types.js";
+import type { PendingQuestion } from "./answer-pump.js";
 
 export interface BootstrapperRunner {
   run(request: PiRunRequest): Promise<PiExecution>;
@@ -32,6 +35,11 @@ export interface BootstrapServiceDeps {
   planId?: string;
   now?: () => string;
   hasExistingConfig?: boolean;
+  /**
+   * Test seam / override for answering bootstrapper HITL questions. Defaults to
+   * a console prompt on stdin when not provided.
+   */
+  onQuestion?: (question: PendingQuestion) => Promise<string>;
 }
 
 export class BootstrapSizeError extends Error {
@@ -45,6 +53,35 @@ export class BootstrapSizeError extends Error {
 }
 
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Path to the superpowers brainstorming skill injected into the bootstrapper
+ * session via `--skill`. It lives outside the worktree; `skillPaths` must also
+ * allow-list its directory so any guarded read works.
+ */
+const BRAINSTORMING_SKILL =
+  "/home/dodo/.pi/agent/git/github.com/obra/superpowers/skills/brainstorming/SKILL.md";
+
+/**
+ * Default operator-facing HITL handler: prints the bootstrapper's question to
+ * stdout and reads a single-line answer from stdin. Used when the service is
+ * not given an `onQuestion` override.
+ */
+function defaultQuestionHandler(_askDir: string): (question: string, context: string) => Promise<string> {
+  return async (question: string, context: string): Promise<string> => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      if (context && context.length > 0) {
+        process.stdout.write(`\n[bootstrapper] ${context}\n`);
+      }
+      process.stdout.write(`\n[bootstrapper asks] ${question}`);
+      const answer = await rl.question("\nAnswer> ");
+      return answer.trim();
+    } finally {
+      rl.close();
+    }
+  };
+}
 
 export class BootstrapService {
   private readonly timeoutMs: number;
@@ -72,18 +109,50 @@ export class BootstrapService {
       hasExistingConfig,
     });
 
-    const execution = await this.deps.pi.run({
-      role: "bootstrapper",
-      model: this.deps.bootstrapperModel,
-      prompt,
-      worktree: this.deps.repository.root,
-      allowedCommands: [],
-      protectedPaths: this.deps.config.agentPolicy.protectedPaths,
-      sessionDir: path.join(analysisDir, "session"),
-      diagnosticsDir: path.join(analysisDir, "diagnostics"),
-      env: safeProcessEnv(),
-      timeoutMs: this.timeoutMs,
+    const skillConfig = (this.deps.config as { bootstrap?: { skillPaths?: string[] } }).bootstrap?.skillPaths ?? [];
+    // Load the brainstorming skill into the session. Derive its SKILL.md from
+    // the configured skillPaths directory when available, else the built-in
+    // default location.
+    const firstSkillDir = skillConfig.length > 0 ? skillConfig[0] : undefined;
+    const brainstormingSkill =
+      firstSkillDir !== undefined
+        ? path.join(firstSkillDir, "SKILL.md")
+        : BRAINSTORMING_SKILL;
+    // The guard must allow reads of the injected skill directory even when the
+    // operator has not configured skillPaths, so the session can re-read the
+    // skill if it needs to. skillPaths defaults to just the skill parent dir.
+    const guardSkillPaths =
+      skillConfig.length > 0
+        ? skillConfig
+        : [path.dirname(brainstormingSkill)];
+    const askDir = path.join(analysisDir, "diagnostics", "ask");
+    const pump = new AnswerPump({
+      askDir,
+      promptFn: this.deps.onQuestion
+        ? async (question, context) => await this.deps.onQuestion!({ seq: 0, question, context })
+        : defaultQuestionHandler(askDir),
     });
+    pump.start();
+
+    let execution: PiExecution;
+    try {
+      execution = await this.deps.pi.run({
+        role: "bootstrapper",
+        model: this.deps.bootstrapperModel,
+        prompt,
+        worktree: this.deps.repository.root,
+        allowedCommands: [],
+        protectedPaths: this.deps.config.agentPolicy.protectedPaths,
+        sessionDir: path.join(analysisDir, "session"),
+        diagnosticsDir: path.join(analysisDir, "diagnostics"),
+        env: safeProcessEnv(),
+        timeoutMs: this.timeoutMs,
+        skills: [brainstormingSkill],
+        skillPaths: guardSkillPaths,
+      });
+    } finally {
+      pump.stop();
+    }
 
     const raw = execution.result as BootstrapperResult;
     const configYaml = hasExistingConfig ? null : proposeConfig(this.deps.bootstrapperModel.model);

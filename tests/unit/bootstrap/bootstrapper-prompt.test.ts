@@ -13,5 +13,7 @@ describe("buildBootstrapperPrompt", () => {
     expect(prompt).toContain("brainstorming");
     expect(prompt).toContain("dependency");
     expect(prompt).toContain("tracks");
+    expect(prompt).toContain("ask_human");
+    expect(prompt).toContain("human-in-the-loop");
   });
 });

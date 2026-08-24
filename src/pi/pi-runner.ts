@@ -35,13 +35,16 @@ const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "submit_result"];
 /** Tools available to the implementer: read-only tools plus guarded mutations. */
 const IMPLEMENTER_TOOLS = [...READ_ONLY_TOOLS, "bash", "edit", "write"];
 
+/** The bootstrapper can additionally ask the operator via ask_human (HITL). */
+const BOOTSTRAPPER_TOOLS = [...READ_ONLY_TOOLS, "ask_human"];
+
 const ROLE_TOOLS: Record<Role, string[]> = {
   refiner: READ_ONLY_TOOLS,
   reviewer: READ_ONLY_TOOLS,
   implementer: IMPLEMENTER_TOOLS,
   brainstormer: READ_ONLY_TOOLS,
   reconciler: READ_ONLY_TOOLS,
-  bootstrapper: READ_ONLY_TOOLS,
+  bootstrapper: BOOTSTRAPPER_TOOLS,
 };
 
 export interface PiRunRequest {
@@ -64,6 +67,18 @@ export interface PiRunRequest {
    */
   env: Record<string, string>;
   timeoutMs: number;
+  /**
+   * Skill files already loaded into the session via `--skill` at startup, so
+   * the model does not need to discover/read them through the guard. Each is
+   * an absolute path to a SKILL.md or a skill directory.
+   */
+  skills?: string[];
+  /**
+   * Absolute paths of directories whose nested files a session may read even
+   * when they live outside the worktree (skills). Applied to the guard
+   * envelope; read-only.
+   */
+  skillPaths?: string[];
   /** Override the Pi executable (tests use a fake). Defaults to `pi`. */
   piCommand?: string;
   /** Override the guard extension path. Defaults to the compiled sibling. */
@@ -133,6 +148,7 @@ export class PiRunner {
       allowedCommands: request.allowedCommands,
       protectedPaths: request.protectedPaths,
       allowedTools: ROLE_TOOLS[role],
+      skillPaths: request.skillPaths ?? [],
     };
     writeFileSync(envelopePath, JSON.stringify(envelope), {
       encoding: "utf8",
@@ -142,6 +158,14 @@ export class PiRunner {
     const piCommand = request.piCommand ?? this.defaultPiCommand;
     const extensionPath = request.extensionPath ?? this.defaultExtensionPath;
     const tools = ROLE_TOOLS[role].join(",");
+
+    // Append `--skill <path>` for each explicitly provided skill so the model
+    // starts the session with it already loaded rather than discovering it via
+    // a guarded read.
+    const skillArgs: string[] = [];
+    for (const skill of request.skills ?? []) {
+      skillArgs.push("--skill", skill);
+    }
 
     const processResult = await this.processRunner.run({
       command: piCommand,
@@ -160,6 +184,7 @@ export class PiRunner {
         tools,
         "--extension",
         extensionPath,
+        ...skillArgs,
         request.prompt,
       ],
       cwd: request.worktree,
