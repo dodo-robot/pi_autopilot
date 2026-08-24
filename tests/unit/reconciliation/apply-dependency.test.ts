@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendDependencyToBody,
   bodyAlreadyDependsOn,
+  removeManagedDependencyFromBody,
   renderDependencyLine,
 } from "../../../src/reconciliation/apply-dependency.js";
 
@@ -40,5 +41,30 @@ describe("bodyAlreadyDependsOn", () => {
   it("detects an explicit line-start dependency", () => {
     const body = "depends on: #12\nmore";
     expect(bodyAlreadyDependsOn(body, 12)).toBe(true);
+  });
+});
+
+describe("removeManagedDependencyFromBody", () => {
+  it("removes the dependency line and its now-empty header", () => {
+    const body = "Do the oauth thing.\n\nDepends on:\n- #16 (unsatisfied)";
+    expect(removeManagedDependencyFromBody(body, 16)).toBe("Do the oauth thing.");
+  });
+
+  it("removes only the matching line, keeping other bullets under the same header", () => {
+    const body =
+      "Body here.\n\nDepends on:\n- #7 (unsatisfied)\n- #9 (unsatisfied)";
+    expect(removeManagedDependencyFromBody(body, 7)).toBe(
+      "Body here.\n\nDepends on:\n- #9 (unsatisfied)",
+    );
+  });
+
+  it("is a no-op when the managed-form line is absent", () => {
+    const body = "Body here.\n\nDepends on:\n- #7 (unsatisfied)";
+    expect(removeManagedDependencyFromBody(body, 99)).toBe(body);
+  });
+
+  it("does not touch a free-text dependency line", () => {
+    const body = "depends on: #12\nmore content";
+    expect(removeManagedDependencyFromBody(body, 12)).toBe(body);
   });
 });
