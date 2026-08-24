@@ -91,6 +91,75 @@ describe("applyIdempotencyDowngrades", () => {
     expect(result).toMatchObject({ type: "KEEP", issue: 17 });
   });
 
+  it("downgrades a SPLIT_ISSUE patch to KEEP when the parent body already lists all proposed children", () => {
+    const patches: BacklogPatch[] = [
+      {
+        type: "SPLIT_ISSUE",
+        issue: 20,
+        reason: "spans two independent behavioral outcomes",
+        children: [
+          { title: "Reject revoked sessions during authentication", enrichment: enrichment() },
+          { title: "Rate-limit failed logins", enrichment: enrichment() },
+        ],
+      },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      {
+        number: 20,
+        title: "Auth hardening",
+        body:
+          "<!-- autopilot-split:start -->\n## Split into\n\n" +
+          "- [ ] #124 Reject revoked sessions during authentication\n" +
+          "- [ ] #125 Rate-limit failed logins\n" +
+          "<!-- autopilot-split:end -->",
+      },
+    ]);
+    expect(result).toMatchObject({ type: "KEEP", issue: 20 });
+  });
+
+  it("leaves a SPLIT_ISSUE patch unchanged when the parent body is missing one of the proposed children", () => {
+    const patches: BacklogPatch[] = [
+      {
+        type: "SPLIT_ISSUE",
+        issue: 20,
+        reason: "spans two independent behavioral outcomes",
+        children: [
+          { title: "Reject revoked sessions during authentication", enrichment: enrichment() },
+          { title: "Rate-limit failed logins", enrichment: enrichment() },
+        ],
+      },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      {
+        number: 20,
+        title: "Auth hardening",
+        body:
+          "<!-- autopilot-split:start -->\n## Split into\n\n" +
+          "- [ ] #124 Reject revoked sessions during authentication\n" +
+          "<!-- autopilot-split:end -->",
+      },
+    ]);
+    expect(result.type).toBe("SPLIT_ISSUE");
+  });
+
+  it("leaves a SPLIT_ISSUE patch unchanged when the parent body has no split section at all", () => {
+    const patches: BacklogPatch[] = [
+      {
+        type: "SPLIT_ISSUE",
+        issue: 20,
+        reason: "spans two independent behavioral outcomes",
+        children: [
+          { title: "Reject revoked sessions during authentication", enrichment: enrichment() },
+          { title: "Rate-limit failed logins", enrichment: enrichment() },
+        ],
+      },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      { number: 20, title: "Auth hardening", body: "Original body, no section yet" },
+    ]);
+    expect(result.type).toBe("SPLIT_ISSUE");
+  });
+
   it("downgrades a CREATE_ISSUE patch to KEEP of the matching issue on an exact (case-insensitive) title match", () => {
     const patches: BacklogPatch[] = [
       {

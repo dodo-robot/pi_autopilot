@@ -6,6 +6,7 @@ import {
 import type { BacklogPatch } from "../domain/reconciliation.js";
 import { RefinementSectionError } from "../readiness/refinement-section.js";
 import { upsertReconciliationSection } from "./managed-section.js";
+import { splitAlreadyApplied } from "./managed-split-section.js";
 
 interface IssueLike {
   number: number;
@@ -106,6 +107,19 @@ export function applyIdempotencyDowngrades(
           type: "KEEP",
           issue: duplicate.number,
           reason: `an issue titled "${duplicate.title}" already exists (#${duplicate.number})`,
+        };
+      }
+      return patch;
+    }
+
+    if (patch.type === "SPLIT_ISSUE") {
+      const current = byNumber.get(patch.issue);
+      if (current === undefined) return patch;
+      if (splitAlreadyApplied(current.body, patch.children)) {
+        return {
+          type: "KEEP",
+          issue: patch.issue,
+          reason: "already split into the proposed children",
         };
       }
       return patch;
