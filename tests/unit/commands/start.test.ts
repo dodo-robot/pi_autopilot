@@ -208,3 +208,43 @@ describe("start command", () => {
     expect(deps.setExitCode).toHaveBeenCalledWith(1);
   });
 });
+
+describe("start command scheduler flags", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(tmpdir(), "start-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("rejects an invalid max concurrency", async () => {
+    const messages: string[] = [];
+    let exitCode: number | undefined;
+    const deps = makeDeps(tmpDir, {
+      stderr: (line) => messages.push(line),
+      setExitCode: (code) => { exitCode = code; },
+    });
+
+    await runStart(deps, ["42", "--max-concurrent", "0"]);
+
+    expect(exitCode).toBe(1);
+    expect(messages.join("\n")).toMatch(/invalid --max-concurrent/);
+  });
+
+  it("rejects an invalid idle timeout", async () => {
+    const messages: string[] = [];
+    let exitCode: number | undefined;
+    const deps = makeDeps(tmpDir, {
+      stderr: (line) => messages.push(line),
+      setExitCode: (code) => { exitCode = code; },
+    });
+
+    await runStart(deps, ["42", "--idle-timeout", "-1"]);
+
+    expect(exitCode).toBe(1);
+    expect(messages.join("\n")).toMatch(/invalid --idle-timeout/);
+  });
+});

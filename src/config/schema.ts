@@ -36,6 +36,23 @@ export interface RoleModelOverride {
   thinking?: ThinkingLevel;
 }
 
+const OptionalNonNegativeIntSchema = z.number().int().nonnegative().nullable().default(null);
+
+export const SchedulerConfigSchema = z
+  .object({
+    maxConcurrentRuns: z.number().int().positive().default(1),
+    idleTimeoutMinutes: z.number().int().nonnegative().default(0),
+    budgets: z
+      .object({
+        maxElapsedMinutes: OptionalNonNegativeIntSchema,
+        maxStartedRuns: OptionalNonNegativeIntSchema,
+        maxFailedRuns: OptionalNonNegativeIntSchema,
+      })
+      .prefault({}),
+  })
+  .prefault({});
+export type SchedulerConfig = z.infer<typeof SchedulerConfigSchema>;
+
 /** Versioned repository policy file (`.pi/autopilot.yaml`). */
 export const AutopilotConfigSchema = z.object({
   version: z.literal(1),
@@ -109,5 +126,6 @@ export const AutopilotConfigSchema = z.object({
       requirementsPaths: z.array(z.string()).optional(),
     })
     .prefault({}),
+  scheduler: SchedulerConfigSchema,
 });
 export type AutopilotConfig = z.infer<typeof AutopilotConfigSchema>;

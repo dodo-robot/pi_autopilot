@@ -13,6 +13,11 @@ import { resolveRepositoryContext } from "../github/repository-context.js";
 import { ProcessRunner } from "../platform/process-runner.js";
 import { ThinkingLevelSchema } from "../config/schema.js";
 import type { RoleModelEntry, RoleModelOverride } from "../config/schema.js";
+import {
+  parseOptionalNonNegativeInt,
+  parseOptionalPositiveInt,
+  type SchedulerCliOverrides,
+} from "../scheduler/policy.js";
 import type { RunOverrides } from "../workflow/run-service.js";
 import { resolveIssueRefs } from "./args.js";
 
@@ -133,6 +138,36 @@ function resolveStartOverrides(opts: Record<string, string | boolean | undefined
   return overrides;
 }
 
+function resolveSchedulerCliOverrides(opts: Record<string, string | boolean | undefined>): SchedulerCliOverrides {
+  const maxConcurrentRuns = parseOptionalPositiveInt(
+    typeof opts.maxConcurrent === "string" ? opts.maxConcurrent : undefined,
+    "--max-concurrent",
+  );
+  const idleTimeoutMinutes = parseOptionalNonNegativeInt(
+    typeof opts.idleTimeout === "string" ? opts.idleTimeout : undefined,
+    "--idle-timeout",
+  );
+  const maxElapsedMinutes = parseOptionalNonNegativeInt(
+    typeof opts.maxElapsed === "string" ? opts.maxElapsed : undefined,
+    "--max-elapsed",
+  );
+  const maxStartedRuns = parseOptionalNonNegativeInt(
+    typeof opts.maxStartedRuns === "string" ? opts.maxStartedRuns : undefined,
+    "--max-started-runs",
+  );
+  const maxFailedRuns = parseOptionalNonNegativeInt(
+    typeof opts.maxFailedRuns === "string" ? opts.maxFailedRuns : undefined,
+    "--max-failed-runs",
+  );
+  return {
+    ...(maxConcurrentRuns === null ? {} : { maxConcurrentRuns }),
+    ...(idleTimeoutMinutes === null ? {} : { idleTimeoutMinutes }),
+    ...(maxElapsedMinutes === null ? {} : { maxElapsedMinutes }),
+    ...(maxStartedRuns === null ? {} : { maxStartedRuns }),
+    ...(maxFailedRuns === null ? {} : { maxFailedRuns }),
+  };
+}
+
 function defaultSpawnDaemon(daemonEntryPath: string, env: Record<string, string>): { pid: number } {
   const child = spawn(process.execPath, [daemonEntryPath], {
     detached: true,
@@ -163,6 +198,11 @@ export function registerStartCommand(program: Command, deps: StartCommandDeps = 
     .option("--implementer-thinking <level>")
     .option("--reviewer-model <model>")
     .option("--reviewer-thinking <level>")
+    .option("--max-concurrent <n>", "override scheduler.maxConcurrentRuns for this daemon")
+    .option("--max-elapsed <minutes>", "override scheduler.budgets.maxElapsedMinutes")
+    .option("--max-started-runs <n>", "override scheduler.budgets.maxStartedRuns")
+    .option("--max-failed-runs <n>", "override scheduler.budgets.maxFailedRuns")
+    .option("--idle-timeout <minutes>", "override scheduler.idleTimeoutMinutes")
     .action(async (issueArgs: string[], opts: Record<string, string | boolean | undefined>) => {
       const cwd = deps.cwd ?? process.cwd();
       const paths = appPaths(deps.dataDir);
@@ -181,13 +221,16 @@ export function registerStartCommand(program: Command, deps: StartCommandDeps = 
       let issues: number[];
       let ctx: Awaited<ReturnType<typeof resolveRepositoryContext>> | null = null;
       let overrides: RunOverrides;
+      let schedulerCliOverrides: SchedulerCliOverrides;
       try {
         overrides = resolveStartOverrides(opts);
+        schedulerCliOverrides = resolveSchedulerCliOverrides(opts);
       } catch (err) {
         stderr(`start: ${err instanceof Error ? err.message : String(err)}`);
         setExitCode(1);
         return;
       }
+      void schedulerCliOverrides;
 
       if (opts.fromAnalyze === true || typeof opts.fromAnalyze === "string") {
         try {
