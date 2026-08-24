@@ -27,6 +27,9 @@ function makeDeps(overrides: Partial<DaemonRunnerDeps> = {}): DaemonRunnerDeps {
       addLabel: vi.fn(),
       removeLabel: vi.fn(),
     } as any,
+    pendingQueueStore: {
+      drainAll: vi.fn().mockReturnValue([]),
+    } as any,
     runService: {
       start: vi.fn().mockResolvedValue({
         runId: "run-abc",
@@ -282,5 +285,83 @@ describe("DaemonRunner claim/release labels", () => {
 
     expect(deps.queueStore.write).toHaveBeenCalled();
     expect(deps.pidFile.delete).toHaveBeenCalled();
+  });
+});
+
+describe("DaemonRunner pending queue merge", () => {
+  it("drains pending once before the loop starts, merging new issues onto the queue", async () => {
+    const deps = makeDeps();
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+    (deps.pendingQueueStore.drainAll as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce([99]) // pre-loop drain
+      .mockReturnValue([]);      // subsequent drains
+    (deps.runService.start as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ runId: "run-1", stage: "PR_OPEN", issueNumber: 28, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null })
+      .mockResolvedValueOnce({ runId: "run-2", stage: "PR_OPEN", issueNumber: 99, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.runService.start).toHaveBeenCalledTimes(2);
+    expect(deps.runService.start).toHaveBeenNthCalledWith(2, 99, {});
+  });
+
+  it("drains pending once per loop iteration", async () => {
+    const deps = makeDeps();
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+    (deps.pendingQueueStore.drainAll as ReturnType<typeof vi.fn>).mockReturnValue([]);
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "PR_OPEN", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+
+    await new DaemonRunner(deps).run();
+
+    // Once before the loop + once after the single iteration = 2 calls
+    expect(deps.pendingQueueStore.drainAll).toHaveBeenCalledTimes(2);
+  });
+
+  it("deduplicates pending issues already present anywhere in the full queue", async () => {
+    const deps = makeDeps();
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+    (deps.pendingQueueStore.drainAll as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce([28]) // already in queue.issues — must not duplicate
+      .mockReturnValue([]);
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      runId: "run-1", stage: "PR_OPEN", issueNumber: 28,
+      repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null,
+    });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.runService.start).toHaveBeenCalledTimes(1);
+    expect(deps.runService.start).toHaveBeenCalledWith(28, {});
+  });
+
+  it("persists the merged queue via queueStore.write when pending issues are added", async () => {
+    const deps = makeDeps();
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+    });
+    (deps.pendingQueueStore.drainAll as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce([99])
+      .mockReturnValue([]);
+    (deps.runService.start as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ runId: "run-1", stage: "PR_OPEN", issueNumber: 28, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null })
+      .mockResolvedValueOnce({ runId: "run-2", stage: "PR_OPEN", issueNumber: 99, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    await new DaemonRunner(deps).run();
+
+    const writtenQueues = (deps.queueStore.write as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(writtenQueues.some((q) => q.issues.includes(99))).toBe(true);
   });
 });

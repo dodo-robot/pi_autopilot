@@ -1,12 +1,14 @@
 import type { RunOverrides, RunSummary } from "../workflow/run-service.js";
 import type { PidFile } from "./pid-file.js";
-import type { QueueStore, CompletedRun } from "./queue-store.js";
+import type { QueueStore, CompletedRun, DaemonQueue } from "./queue-store.js";
 import type { LogFile } from "./log-file.js";
+import type { PendingQueueStore } from "./pending-queue-store.js";
 import { AGENT_READY_LABEL, AGENT_IN_PROGRESS_LABEL } from "../analysis/label-reconciliation.js";
 
 export interface DaemonRunnerDeps {
   pidFile: Pick<PidFile, "writePid" | "delete">;
   queueStore: Pick<QueueStore, "read" | "write">;
+  pendingQueueStore: Pick<PendingQueueStore, "drainAll">;
   logFile: Pick<LogFile, "info" | "error">;
   github: {
     addLabel(number: number, name: string): Promise<void>;
@@ -64,6 +66,17 @@ export class DaemonRunner {
     }
   }
 
+  private mergePending(queue: DaemonQueue): void {
+    const pending = this.deps.pendingQueueStore.drainAll();
+    if (pending.length === 0) return;
+    const existing = new Set(queue.issues);
+    const toAdd = pending.filter((n) => !existing.has(n));
+    if (toAdd.length === 0) return;
+    queue.issues.push(...toAdd);
+    this.deps.queueStore.write(queue);
+    this.deps.logFile.info(`merged ${toAdd.length} pending issue(s): [${toAdd.join(",")}]`);
+  }
+
   async run(): Promise<void> {
     const { pidFile, queueStore, logFile, runStore, recoveryService, runService, overrides } =
       this.deps;
@@ -116,6 +129,8 @@ export class DaemonRunner {
       logFile.info("reconciliation: no interrupted runs found");
     }
 
+    this.mergePending(queue);
+
     // --- Main queue loop ---
     while (queue.currentIndex < queue.issues.length && !this.stopRequested) {
       const issueNumber = queue.issues[queue.currentIndex]!;
@@ -153,6 +168,7 @@ export class DaemonRunner {
       queue.completedRuns.push(completed);
       queue.currentIndex += 1;
       queueStore.write(queue);
+      this.mergePending(queue);
     }
 
     if (this.stopRequested) {

@@ -20,6 +20,7 @@ import { ProcessRunner } from "../platform/process-runner.js";
 import { loadRepositoryConfig } from "../config/load-config.js";
 import { PidFile } from "./pid-file.js";
 import { QueueStore } from "./queue-store.js";
+import { PendingQueueStore } from "./pending-queue-store.js";
 import { LogFile } from "./log-file.js";
 import { DaemonRunner } from "./daemon-runner.js";
 
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
 
     // Read overrides written by `autopilot start` into the queue file
     const queueStore = new QueueStore({ queuePath: paths.queuePath, daemonDir: paths.daemonDir });
+    const pendingQueueStore = new PendingQueueStore({ pendingQueuePath: paths.pendingQueuePath, daemonDir: paths.daemonDir });
     const queue = queueStore.read();
     if (queue === null) {
       logFile.error("daemon-entry: no queue.json found — exiting");
@@ -75,6 +77,7 @@ async function main(): Promise<void> {
     const runner = new DaemonRunner({
       pidFile,
       queueStore,
+      pendingQueueStore,
       logFile,
       github: {
         addLabel: (number, name) => github.addLabel(number, name),
