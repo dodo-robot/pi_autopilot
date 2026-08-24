@@ -211,6 +211,10 @@ class FakeGitHub implements GitHubPort {
     throw new Error("issue body/closure calls are forbidden in M1");
   });
 
+  closeIssue = vi.fn(async (): Promise<never> => {
+    throw new Error("issue body/closure calls are forbidden in M1");
+  });
+
   async findPullRequestByHead(head: string): Promise<PullRequestRef | null> {
     return this.pulls.get(head) ?? null;
   }

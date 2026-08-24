@@ -141,6 +141,14 @@ class FakeGitHub implements GitHubPort {
     this.comments.push({ id: this.nextCommentId++, body });
   }
 
+  async closeIssue(number: number): Promise<void> {
+    const issue = this.issues?.get(number) ?? this.issue;
+    if (issue !== undefined) {
+      this.issues?.set(number, { ...issue, state: "closed" });
+      this.issue = { ...this.issue, state: "closed" };
+    }
+  }
+
   async findPullRequestByHead(head: string): Promise<PullRequestRef | null> {
     return this.pulls.get(head) ?? null;
   }

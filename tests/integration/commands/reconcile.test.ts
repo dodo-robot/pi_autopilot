@@ -66,6 +66,11 @@ class FakeGitHub implements GitHubPort {
     this.mutationCalls.push("createIssueComment");
     throw new Error("must not be called");
   }
+
+  async closeIssue(): Promise<void> {
+    this.mutationCalls.push("closeIssue");
+    throw new Error("must not be called");
+  }
   async findPullRequestByHead(): Promise<null> {
     return null;
   }
@@ -418,6 +423,11 @@ describe("autopilot reconcile", () => {
       }
       async createIssueComment(): Promise<void> {
         this.mutationCalls.push("createIssueComment");
+        throw new Error("must not be called");
+      }
+
+      async closeIssue(): Promise<void> {
+        this.mutationCalls.push("closeIssue");
         throw new Error("must not be called");
       }
       async findPullRequestByHead(): Promise<null> {
