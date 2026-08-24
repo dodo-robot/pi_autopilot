@@ -4,6 +4,18 @@ import type { QueueStore, CompletedRun, DaemonQueue } from "./queue-store.js";
 import type { LogFile } from "./log-file.js";
 import type { PendingQueueStore } from "./pending-queue-store.js";
 import { AGENT_READY_LABEL, AGENT_IN_PROGRESS_LABEL } from "../analysis/label-reconciliation.js";
+import { UNKNOWN_WORKSPACE_SCOPE } from "../scheduler/state.js";
+import {
+  findStartableIssue,
+  refreshConflictStates,
+  markIssueRunning,
+  completeIssue,
+  toCompletedRun,
+} from "../scheduler/scheduler.js";
+
+export interface SchedulerExecutor {
+  start(issueNumber: number, overrides: RunOverrides): Promise<RunSummary>;
+}
 
 export interface DaemonRunnerDeps {
   pidFile: Pick<PidFile, "writePid" | "delete">;
@@ -73,6 +85,24 @@ export class DaemonRunner {
     const toAdd = pending.filter((n) => !existing.has(n));
     if (toAdd.length === 0) return;
     queue.issues.push(...toAdd);
+    if (queue.scheduler !== undefined) {
+      queue.scheduler = {
+        ...queue.scheduler,
+        issues: [
+          ...queue.scheduler.issues,
+          ...toAdd.map((issueNumber) => ({
+            issueNumber,
+            state: "PENDING" as const,
+            dependencies: [],
+            workspaceScope: UNKNOWN_WORKSPACE_SCOPE,
+            reason: "pending queue entry",
+            runId: null,
+            outcome: null,
+          })),
+        ],
+        lastUpdatedAt: new Date().toISOString(),
+      };
+    }
     this.deps.queueStore.write(queue);
     this.deps.logFile.info(`merged ${toAdd.length} pending issue(s): [${toAdd.join(",")}]`);
   }
@@ -131,6 +161,19 @@ export class DaemonRunner {
 
     this.mergePending(queue);
 
+    if (queue.scheduler === undefined) {
+      await this.runSequentialQueue(queue);
+    } else {
+      await this.runSchedulerQueue(queue);
+    }
+
+    pidFile.delete();
+    exit(0);
+  }
+
+  private async runSequentialQueue(queue: DaemonQueue): Promise<void> {
+    const { queueStore, logFile, runService, overrides } = this.deps;
+
     // --- Main queue loop ---
     while (queue.currentIndex < queue.issues.length && !this.stopRequested) {
       const issueNumber = queue.issues[queue.currentIndex]!;
@@ -178,8 +221,62 @@ export class DaemonRunner {
         `queue exhausted — ${queue.completedRuns.length} run(s) completed`,
       );
     }
+  }
 
-    pidFile.delete();
-    exit(0);
+  private async runSchedulerQueue(queue: DaemonQueue): Promise<void> {
+    const active = new Set<Promise<void>>();
+
+    const launchAvailable = (): void => {
+      for (;;) {
+        if (queue.scheduler === undefined) return;
+        if (active.size >= queue.scheduler.policy.maxConcurrentRuns) return;
+        queue.scheduler = refreshConflictStates(queue.scheduler);
+        this.deps.queueStore.write(queue);
+        const candidate = findStartableIssue(queue.scheduler, new Date().toISOString());
+        if (candidate === null) return;
+        const startedAt = new Date().toISOString();
+        queue.scheduler = markIssueRunning(queue.scheduler, candidate.issueNumber, null, startedAt);
+        this.deps.queueStore.write(queue);
+        const promise = this.runOneScheduledIssue(queue, candidate.issueNumber)
+          .finally(() => { active.delete(promise); });
+        active.add(promise);
+      }
+    };
+
+    launchAvailable();
+    while (active.size > 0) {
+      await Promise.race(active);
+      this.mergePending(queue);
+      launchAvailable();
+      if (this.stopRequested) break;
+    }
+
+    if (this.stopRequested) {
+      this.deps.logFile.info("daemon exiting cleanly after stage boundary");
+    } else {
+      this.deps.logFile.info(
+        `queue exhausted — ${queue.completedRuns.length} run(s) completed`,
+      );
+    }
+  }
+
+  private async runOneScheduledIssue(queue: DaemonQueue, issueNumber: number): Promise<void> {
+    this.deps.logFile.info(`starting run issue=${issueNumber}`);
+    const claimPromise = this.claim(issueNumber);
+    let summary: RunSummary;
+    try {
+      summary = await this.deps.runService.start(issueNumber, this.deps.overrides);
+    } catch (err) {
+      this.deps.logFile.error(`run failed for issue=${issueNumber}: ${err instanceof Error ? err.message : String(err)}`);
+      summary = { runId: `failed-${issueNumber}`, stage: "FAILED", repository: queue.repository, issueNumber, publication: null, reason: err instanceof Error ? err.message : String(err) };
+    }
+    await claimPromise;
+    await this.release(issueNumber, summary.stage);
+    this.deps.logFile.info(`run complete issue=${issueNumber} outcome=${summary.stage}`);
+    const completedAt = new Date().toISOString();
+    queue.scheduler = completeIssue(queue.scheduler!, summary, completedAt);
+    queue.completedRuns.push(toCompletedRun(summary, completedAt));
+    queue.currentIndex = queue.completedRuns.length;
+    this.deps.queueStore.write(queue);
   }
 }

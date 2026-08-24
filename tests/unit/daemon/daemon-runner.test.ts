@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DaemonRunner } from "../../../src/daemon/daemon-runner.js";
 import type { DaemonRunnerDeps } from "../../../src/daemon/daemon-runner.js";
 import { AGENT_READY_LABEL, AGENT_IN_PROGRESS_LABEL } from "../../../src/analysis/label-reconciliation.js";
+import { createInitialSchedulerState } from "../../../src/scheduler/state.js";
 
 function makeDeps(overrides: Partial<DaemonRunnerDeps> = {}): DaemonRunnerDeps {
   return {
@@ -363,5 +364,118 @@ describe("DaemonRunner pending queue merge", () => {
 
     const writtenQueues = (deps.queueStore.write as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
     expect(writtenQueues.some((q) => q.issues.includes(99))).toBe(true);
+  });
+});
+
+function queueWithSchedulerIssues(input: {
+  maxConcurrentRuns: number;
+  budgets?: { maxElapsedMinutes: number | null; maxStartedRuns: number | null; maxFailedRuns: number | null };
+  issues: Array<{ issueNumber: number; scope: string }>;
+}) {
+  const policy = {
+    maxConcurrentRuns: input.maxConcurrentRuns,
+    idleTimeoutMinutes: 0,
+    budgets: input.budgets ?? { maxElapsedMinutes: null, maxStartedRuns: null, maxFailedRuns: null },
+  };
+  return {
+    repository: { owner: "acme", repo: "widgets" },
+    issues: input.issues.map((issue) => issue.issueNumber),
+    currentIndex: 0,
+    startedAt: "2026-08-24T00:00:00.000Z",
+    completedRuns: [],
+    scheduler: createInitialSchedulerState({
+      policy,
+      startedAt: "2026-08-24T00:00:00.000Z",
+      issues: input.issues.map((issue) => ({
+        issueNumber: issue.issueNumber,
+        dependencies: [],
+        workspaceScope: { kind: "paths", patterns: [issue.scope], source: "issue-contract" },
+        initialState: "PENDING",
+        reason: "ready",
+      })),
+    }),
+  };
+}
+
+describe("DaemonRunner scheduler queue", () => {
+  it("starts disjoint pending scheduler issues up to maxConcurrentRuns", async () => {
+    const deps = makeDeps();
+    let resolveRun1!: (value: any) => void;
+    const run1 = new Promise((resolve) => { resolveRun1 = resolve; });
+    (deps.runService.start as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(run1)
+      .mockResolvedValueOnce({ runId: "run-2", stage: "PR_OPEN", issueNumber: 2, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" },
+      issues: [1, 2],
+      currentIndex: 0,
+      startedAt: "2026-08-24T00:00:00.000Z",
+      completedRuns: [],
+      scheduler: createInitialSchedulerState({
+        policy: { maxConcurrentRuns: 2, idleTimeoutMinutes: 0, budgets: { maxElapsedMinutes: null, maxStartedRuns: null, maxFailedRuns: null } },
+        startedAt: "2026-08-24T00:00:00.000Z",
+        issues: [
+          { issueNumber: 1, dependencies: [], workspaceScope: { kind: "paths", patterns: ["src/a/**"], source: "issue-contract" }, initialState: "PENDING", reason: "ready" },
+          { issueNumber: 2, dependencies: [], workspaceScope: { kind: "paths", patterns: ["src/b/**"], source: "issue-contract" }, initialState: "PENDING", reason: "ready" },
+        ],
+      }),
+    });
+
+    const runPromise = new DaemonRunner(deps).run();
+    await Promise.resolve();
+    expect(deps.runService.start).toHaveBeenCalledTimes(2);
+    resolveRun1({ runId: "run-1", stage: "PR_OPEN", issueNumber: 1, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+    await runPromise;
+
+    const finalWrite = (deps.queueStore.write as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0];
+    expect(finalWrite.scheduler.issues.every((issue: { state: string }) => issue.state === "COMPLETED")).toBe(true);
+  });
+
+  it("does not run conflicting scheduler issues concurrently", async () => {
+    const deps = makeDeps();
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue(queueWithSchedulerIssues({
+      maxConcurrentRuns: 2,
+      issues: [
+        { issueNumber: 1, scope: "src/daemon/**" },
+        { issueNumber: 2, scope: "src/daemon/daemon-runner.ts" },
+      ],
+    }));
+    (deps.runService.start as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ runId: "run-1", stage: "PR_OPEN", issueNumber: 1, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null })
+      .mockResolvedValueOnce({ runId: "run-2", stage: "PR_OPEN", issueNumber: 2, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.runService.start).toHaveBeenNthCalledWith(1, 1, {});
+    expect(deps.runService.start).toHaveBeenNthCalledWith(2, 2, {});
+  });
+
+  it("stops starting scheduler issues when maxStartedRuns is reached", async () => {
+    const deps = makeDeps();
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue(queueWithSchedulerIssues({
+      maxConcurrentRuns: 2,
+      budgets: { maxElapsedMinutes: null, maxStartedRuns: 1, maxFailedRuns: null },
+      issues: [{ issueNumber: 1, scope: "src/a/**" }, { issueNumber: 2, scope: "src/b/**" }],
+    }));
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ runId: "run-1", stage: "PR_OPEN", issueNumber: 1, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.runService.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("records FAILED when scheduler executor throws", async () => {
+    const deps = makeDeps();
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue(queueWithSchedulerIssues({
+      maxConcurrentRuns: 1,
+      issues: [{ issueNumber: 1, scope: "src/a/**" }],
+    }));
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("boom"));
+
+    await new DaemonRunner(deps).run();
+
+    const writes = (deps.queueStore.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
+    expect(writes.at(-1).completedRuns[0].outcome).toBe("FAILED");
   });
 });
