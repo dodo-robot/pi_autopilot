@@ -45,6 +45,10 @@ const cases: Array<{ patch: BacklogPatch; policy: "auto-safe" | "requires-approv
     patch: { type: "ADD_DEPENDENCY", issue: 1, dependsOn: 2, reason: "ordering" },
     policy: "auto-safe",
   },
+  {
+    patch: { type: "REMOVE_DEPENDENCY", issue: 1, dependsOn: 2, reason: "no longer needed" },
+    policy: "requires-approval",
+  },
   { patch: { type: "MARK_STALE", issue: 1, reason: "superseded" }, policy: "requires-approval" },
   {
     patch: {
