@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { RepositoryRef } from "../domain/contracts.js";
+import type { SchedulerState } from "../scheduler/state.js";
 import type { RunOverrides } from "../workflow/run-service.js";
 
 export interface CompletedRun {
@@ -16,6 +17,7 @@ export interface DaemonQueue {
   startedAt: string;
   completedRuns: CompletedRun[];
   overrides?: RunOverrides;
+  scheduler?: SchedulerState;
 }
 
 export class QueueStore {

@@ -4,6 +4,10 @@ import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { QueueStore } from "../../../src/daemon/queue-store.js";
 import type { DaemonQueue } from "../../../src/daemon/queue-store.js";
+import {
+  UNKNOWN_WORKSPACE_SCOPE,
+  createInitialSchedulerState,
+} from "../../../src/scheduler/state.js";
 
 const REPO = { owner: "acme", repo: "widgets" };
 
@@ -80,5 +84,34 @@ describe("QueueStore", () => {
     writeFileSync(queuePath, "not-json");
     const qs = new QueueStore({ queuePath, daemonDir });
     expect(() => qs.read()).toThrow();
+  });
+
+  it("round-trips queue scheduler state without dropping old fields", () => {
+    const qs = new QueueStore({ queuePath, daemonDir });
+    const queue = makeQueue({
+      issues: [42],
+      startedAt: "2026-08-24T00:00:00.000Z",
+      scheduler: createInitialSchedulerState({
+        policy: {
+          maxConcurrentRuns: 1,
+          idleTimeoutMinutes: 0,
+          budgets: { maxElapsedMinutes: null, maxStartedRuns: null, maxFailedRuns: null },
+        },
+        startedAt: "2026-08-24T00:00:00.000Z",
+        issues: [
+          {
+            issueNumber: 42,
+            dependencies: [],
+            workspaceScope: UNKNOWN_WORKSPACE_SCOPE,
+            initialState: "PENDING",
+            reason: "ready",
+          },
+        ],
+      }),
+    });
+
+    qs.write(queue);
+
+    expect(qs.read()).toEqual(queue);
   });
 });
