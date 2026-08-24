@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -149,5 +149,33 @@ describe("BootstrapService.plan", () => {
       },
     });
     await svc.plan([doc]);
+  });
+
+  it("writes a RESUME.txt pointer when the session times out", async () => {
+    const { service, pi, paths } = makeService();
+    const originalFake = pi;
+    originalFake.run = async (req: PiRunRequest): Promise<PiExecution> => {
+      originalFake.calls.push(req);
+      // Simulate a session dir with a conversation file present, then throw a
+      // PiRunError whose message matches the timeout pattern.
+      mkdirSync(req.sessionDir, { recursive: true });
+      writeFileSync(path.join(req.sessionDir, "session.jsonl"), "{}", "utf8");
+      mkdirSync(path.join(req.diagnosticsDir, "ask"), { recursive: true });
+      const err = new (await import("../../../src/pi/pi-runner.js")).PiRunError(
+        "bootstrapper session timed out after 90ms",
+        "bootstrapper",
+        { stdout: "", stderr: "", resultPath: path.join(req.diagnosticsDir, "result.json") },
+      );
+      throw err;
+    };
+    await expect(service.plan([doc])).rejects.toThrow(/timed out/);
+    // planId run dir should have a RESUME.txt pointing at the session + ask dir.
+    const runDir = path.join(paths.runDir("bootstrap-20260823-test01"));
+    const resumePath = path.join(runDir, "RESUME.txt");
+    expect(existsSync(resumePath)).toBe(true);
+    const content = readFileSync(resumePath, "utf8");
+    expect(content).toContain("bootstrap-20260823-test01");
+    expect(content).toContain("session");
+    expect(content).toContain("ask");
   });
 });

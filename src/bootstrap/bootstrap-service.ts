@@ -1,4 +1,5 @@
-import { writeFile } from "node:fs/promises";
+import { writeFile, readdir } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import type { ResolvedRoleModel } from "../config/load-config.js";
@@ -7,6 +8,7 @@ import type { BootstrapperResult } from "../domain/contracts.js";
 import type { RepositoryContext } from "../github/repository-context.js";
 import { safeProcessEnv } from "../github/repository-context.js";
 import type { ArtifactStore } from "../persistence/artifact-store.js";
+import { PiRunError } from "../pi/pi-runner.js";
 import type { PiExecution, PiRunRequest } from "../pi/pi-runner.js";
 import type { AppPaths } from "../platform/paths.js";
 import type { RequirementDoc } from "../reconciliation/prompt.js";
@@ -150,6 +152,15 @@ export class BootstrapService {
         skills: [brainstormingSkill],
         skillPaths: guardSkillPaths,
       });
+    } catch (error) {
+      if (error instanceof PiRunError && /timed out/.test(error.message)) {
+        // Option A: a slow / timed-out HITL session loses nothing. Persist a
+        // resume pointer so the operator can fork the pi session and continue
+        // from where the bootstrapper left off (answers already given are in
+        // the ask/ transcript; the conversation is in session/*.jsonl).
+        await this.writeResumePointer(planId, analysisDir, askDir);
+      }
+      throw error;
     } finally {
       pump.stop();
     }
@@ -193,5 +204,44 @@ export class BootstrapService {
     await writeFile(markdownPath, md, "utf8");
 
     return { planId, markdownPath };
+  }
+
+  /**
+   * Persist a human-readable resume pointer for a timed-out bootstrapper
+   * session, so the operator can fork the saved pi session and continue where
+   * the bootstrapper left off rather than losing accumulated HITL progress.
+   */
+  private async writeResumePointer(
+    planId: string,
+    analysisDir: string,
+    askDir: string,
+  ): Promise<void> {
+    const sessionDir = path.join(analysisDir, "session");
+    let sessionFile = "";
+    try {
+      const files = await readdir(sessionDir);
+      sessionFile = files.filter((f) => f.endsWith(".jsonl"))[0] ?? "";
+    } catch {
+      sessionFile = "";
+    }
+    const pointer = [
+      `Bootstrap plan ${planId} was interrupted by the session timeout before completing.`,
+      ``,
+      `The conversation and your answers are preserved on disk. To continue manually:`,
+      ``,
+      `  session (fork with pi):  ${path.join(sessionDir, sessionFile) || "(none written yet)"}`,
+      `  questions/answers:       ${askDir}`,
+      ``,
+      `Resume the bootstrapper conversation by forking the pi session, e.g.:`,
+      ``,
+      `  pi --fork ${path.join(sessionDir, sessionFile) || "<session-path>"} \\`,
+      `     --tools read,grep,find,ls,submit_result,ask_human \\`,
+      `     --extension <path-to-guard-extension> "Continue where you left off."`,
+      ``,
+      `Alternatively, re-run autopilot bootstrap --plan for this batch (it will`,
+      `start a fresh session, but you can reuse this transcript).`,
+      ``,
+    ].join("\n");
+    await writeFileSync(path.join(analysisDir, "RESUME.txt"), pointer, "utf8");
   }
 }

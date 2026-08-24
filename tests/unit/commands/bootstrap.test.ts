@@ -131,4 +131,29 @@ describe("bootstrap command registration", () => {
     expect(output.join("\n")).toContain("bootstrap-20260823-test");
     expect(output.join("\n")).toContain("autopilot bootstrap --apply");
   });
+
+  it("accepts the --bootstrap-timeout flag", async () => {
+    let called = false;
+    const deps: BootstrapCommandDeps = {
+      planFn: async () => {
+        called = true;
+        return { planId: "x", markdownPath: "/tmp/x.md" };
+      },
+      setExitCode: () => {},
+      stdout: () => {},
+    };
+    const program = makeProgram(deps);
+    await program.parseAsync(["bootstrap", "--plan", "--bootstrap-timeout", "45"], { from: "user" });
+    expect(called).toBe(true);
+  });
+
+  it("defaults to bootstrap.timeoutMinutes config in the schema", async () => {
+    const { AutopilotConfigSchema } = await import("../../../src/config/schema.js");
+    const cfg = AutopilotConfigSchema.parse({
+      version: 1,
+      commands: { verify: ["npm test"] },
+    });
+    // @ts-expect-error - accessing bootstrap block
+    expect(cfg.bootstrap.timeoutMinutes).toBe(90);
+  });
 });

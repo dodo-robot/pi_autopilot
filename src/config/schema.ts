@@ -125,6 +125,10 @@ export const AutopilotConfigSchema = z.object({
       tokenThreshold: z.number().int().positive().default(80_000),
       requirementsPaths: z.array(z.string()).optional(),
       skillPaths: z.array(z.string()).optional(),
+      // Wall-clock ceiling for a single bootstrapper HITL session (one `--plan`
+      // run). Generous by default because interactive Q&A + model reasoning over
+      // a full requirement batch can take a while.
+      timeoutMinutes: z.number().int().positive().default(90),
     })
     .prefault({}),
   scheduler: SchedulerConfigSchema,

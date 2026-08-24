@@ -57,8 +57,12 @@ export function registerBootstrapCommand(
       [] as string[],
     )
     .option("--out <dir>", "output directory for plan files")
+    .option(
+      "--bootstrap-timeout <minutes>",
+      "override the bootstrapper session timeout in minutes (default: from bootstrap.timeoutMinutes or 90)",
+    )
     .option("--json", "emit machine-readable output")
-    .action(async (opts: { plan?: boolean; apply?: string; requirements: string[]; out?: string; json?: boolean }) => {
+    .action(async (opts: { plan?: boolean; apply?: string; requirements: string[]; out?: string; bootstrapTimeout?: number; json?: boolean }) => {
       const stdout = deps.stdout ?? ((t) => process.stdout.write(`${t}\n`));
       const stderr = deps.stderr ?? ((t) => process.stderr.write(`${t}\n`));
       const setExitCode = deps.setExitCode ?? ((code) => { process.exitCode = code; });
@@ -101,7 +105,7 @@ export function registerBootstrapCommand(
 
 async function runPlan(
   docs: RequirementDoc[],
-  opts: { out?: string },
+  opts: { out?: string; bootstrapTimeout?: number },
   deps: BootstrapCommandDeps,
 ): Promise<{ planId: string; markdownPath: string }> {
   const runner = deps.processRunner ?? new ProcessRunnerImpl();
@@ -118,6 +122,10 @@ async function runPlan(
     deps.piDefaultModel ?? DEFAULT_PI_MODEL,
   );
   const hasExistingConfig = existsSync(path.join(ctx.root, ".pi", "autopilot.yaml"));
+  // Timeout precedence: CLI flag > bootstrap.timeoutMinutes config > 90 default.
+  const configuredTimeout =
+    (config as { bootstrap?: { timeoutMinutes?: number } }).bootstrap?.timeoutMinutes ?? 90;
+  const bootstrapperTimeoutMs = (opts.bootstrapTimeout ?? configuredTimeout) * 60_000;
   const service = new BootstrapService({
     repository: ctx,
     config,
@@ -126,6 +134,7 @@ async function runPlan(
     paths,
     bootstrapperModel,
     hasExistingConfig,
+    bootstrapperTimeoutMs,
   });
   return service.plan(docs);
 }
