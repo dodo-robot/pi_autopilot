@@ -119,11 +119,16 @@ describe("formatDaemonStatus", () => {
         startedAt: "2026-08-24T00:00:00.000Z",
         issues: [
           { issueNumber: 1, dependencies: [], workspaceScope: { kind: "paths", patterns: ["src/a/**"], source: "issue-contract" }, initialState: "PENDING", reason: "ready" },
+          { issueNumber: 2, dependencies: [], workspaceScope: { kind: "paths", patterns: ["src/b/**"], source: "issue-contract" }, initialState: "DEFERRED_DEPENDENCY", reason: "waiting for #1" },
+          { issueNumber: 3, dependencies: [], workspaceScope: { kind: "paths", patterns: ["src/c/**"], source: "issue-contract" }, initialState: "DEFERRED_CONFLICT", reason: "conflicts with #1" },
+          { issueNumber: 4, dependencies: [], workspaceScope: { kind: "paths", patterns: ["src/d/**"], source: "issue-contract" }, initialState: "DEFERRED_INVALID", reason: "cycle detected" },
         ],
       }),
     });
 
     expect(output).toContain("scheduler 0/2 active");
+    expect(output).toContain("Active     (none)");
+    expect(output).toContain("Pending    1 pending, 1 dependency-blocked, 1 conflict-blocked, 1 invalid");
     expect(output).toContain("Issue");
     expect(output).toContain("#1");
     expect(output).toContain("PENDING");

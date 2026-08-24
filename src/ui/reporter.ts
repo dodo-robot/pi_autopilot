@@ -163,8 +163,20 @@ export function formatDaemonStatus(opts: {
 
   if (opts.scheduler !== undefined) {
     const scheduler = opts.scheduler;
+    const pending = scheduler.issues.filter((issue) => issue.state === "PENDING").length;
+    const dependencyBlocked = scheduler.issues.filter((issue) => issue.state === "DEFERRED_DEPENDENCY").length;
+    const conflictBlocked = scheduler.issues.filter((issue) => issue.state === "DEFERRED_CONFLICT").length;
+    const invalid = scheduler.issues.filter((issue) => issue.state === "DEFERRED_INVALID").length;
+    const active = scheduler.activeRuns.length === 0
+      ? "(none)"
+      : scheduler.activeRuns.map((run) => `#${run.issueNumber} ${run.runId ?? "..."}`).join("  ");
     lines.push(`Daemon      running  PID ${opts.pid}  scheduler ${scheduler.activeRuns.length}/${scheduler.policy.maxConcurrentRuns} active`);
+    lines.push(`Active     ${active}`);
+    lines.push(`Pending    ${pending} pending, ${dependencyBlocked} dependency-blocked, ${conflictBlocked} conflict-blocked, ${invalid} invalid`);
     lines.push(`Budget      started ${scheduler.budgets.startedRuns}/${formatCap(scheduler.policy.budgets.maxStartedRuns)}  failed ${scheduler.budgets.failedRuns}/${formatCap(scheduler.policy.budgets.maxFailedRuns)}  elapsed ${scheduler.budgets.elapsedMinutes}m/${formatCap(scheduler.policy.budgets.maxElapsedMinutes, "m")}`);
+    if (scheduler.budgets.stopReason !== null) {
+      lines.push(`Stop       ${scheduler.budgets.stopReason}`);
+    }
     lines.push("");
     lines.push("Issue  State                 Reason");
     for (const issue of scheduler.issues) {

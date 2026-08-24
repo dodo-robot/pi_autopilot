@@ -12,6 +12,8 @@ import {
   markIssueRunning,
   completeIssue,
   toCompletedRun,
+  updateBudgetUsage,
+  isStartBudgetExhausted,
 } from "../scheduler/scheduler.js";
 
 export interface SchedulerExecutor {
@@ -126,7 +128,7 @@ export class DaemonRunner {
     this.deps.logFile.info(`merged ${toAdd.length} pending issue(s): [${toAdd.join(",")}]`);
   }
 
-  private async idleUntilPendingOrTimeout(queue: DaemonQueue, idleTimeoutMinutes: number): Promise<void> {
+  private async idleUntilPendingOrTimeout(queue: DaemonQueue, idleTimeoutMinutes: number): Promise<DaemonQueue> {
     const now = this.deps.now ?? (() => new Date().toISOString());
     const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     const idleSince = now();
@@ -135,9 +137,13 @@ export class DaemonRunner {
     const timeoutMs = idleTimeoutMinutes * 60_000;
     for (;;) {
       await this.mergePending(queue);
+      if (this.deps.schedulerRefresh !== undefined) {
+        queue = await this.deps.schedulerRefresh.refreshDependencies(queue);
+        this.deps.queueStore.write(queue);
+      }
       const hasPending = queue.scheduler!.issues.some((issue) => issue.state === "PENDING");
-      if (hasPending) return;
-      if (Date.parse(now()) - Date.parse(idleSince) >= timeoutMs) return;
+      if (hasPending) return queue;
+      if (Date.parse(now()) - Date.parse(idleSince) >= timeoutMs) return queue;
       await sleep(1_000);
     }
   }
@@ -267,9 +273,20 @@ export class DaemonRunner {
       for (;;) {
         if (queue.scheduler === undefined) return;
         if (active.size >= queue.scheduler.policy.maxConcurrentRuns) return;
-        queue.scheduler = refreshConflictStates(queue.scheduler);
+        const now = new Date().toISOString();
+        queue.scheduler = refreshConflictStates(updateBudgetUsage(queue.scheduler, now));
+        const stopReason = isStartBudgetExhausted(queue.scheduler);
+        if (stopReason !== null) {
+          queue.scheduler = {
+            ...queue.scheduler,
+            budgets: { ...queue.scheduler.budgets, stopReason },
+            lastUpdatedAt: now,
+          };
+          this.deps.queueStore.write(queue);
+          return;
+        }
         this.deps.queueStore.write(queue);
-        const candidate = findStartableIssue(queue.scheduler, new Date().toISOString());
+        const candidate = findStartableIssue(queue.scheduler, now);
         if (candidate === null) return;
         const startedAt = new Date().toISOString();
         queue.scheduler = markIssueRunning(queue.scheduler, candidate.issueNumber, null, startedAt);
@@ -304,7 +321,7 @@ export class DaemonRunner {
       const idleTimeoutMinutes = queue.scheduler!.policy.idleTimeoutMinutes;
       if (idleTimeoutMinutes === 0) break;
       idledOnce = true;
-      await this.idleUntilPendingOrTimeout(queue, idleTimeoutMinutes);
+      queue = await this.idleUntilPendingOrTimeout(queue, idleTimeoutMinutes);
       launchAvailable();
       if (active.size === 0) break;
     }

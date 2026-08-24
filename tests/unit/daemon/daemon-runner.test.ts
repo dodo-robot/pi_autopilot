@@ -463,6 +463,8 @@ describe("DaemonRunner scheduler queue", () => {
     await new DaemonRunner(deps).run();
 
     expect(deps.runService.start).toHaveBeenCalledTimes(1);
+    const finalWrite = (deps.queueStore.write as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0];
+    expect(finalWrite.scheduler.budgets.stopReason).toBe("max started runs reached (1/1)");
   });
 
   it("records FAILED when scheduler executor throws", async () => {
@@ -562,6 +564,40 @@ describe("DaemonRunner blocked dependency refresh and idle", () => {
     await new DaemonRunner(deps).run();
 
     expect(deps.runService.start).toHaveBeenCalledWith(99, {});
+  });
+
+  it("refreshes blocked dependencies while idling before timing out", async () => {
+    const deps = makeDeps({
+      now: vi.fn()
+        .mockReturnValueOnce("2026-08-24T00:00:00.000Z")
+        .mockReturnValueOnce("2026-08-24T00:00:30.000Z")
+        .mockReturnValue("2026-08-24T00:01:01.000Z"),
+      sleep: vi.fn(async () => undefined),
+      schedulerRefresh: {
+        refreshDependencies: vi.fn(async (queue) => {
+          if ((deps.schedulerRefresh!.refreshDependencies as ReturnType<typeof vi.fn>).mock.calls.length === 1) return queue;
+          const scheduler = queue.scheduler!;
+          return {
+            ...queue,
+            scheduler: {
+              ...scheduler,
+              issues: scheduler.issues.map((issue) => issue.issueNumber === 2
+                ? { ...issue, state: "PENDING", dependencies: issue.dependencies.map((dep) => ({ ...dep, satisfied: true, source: "github-closed", checkedAt: "2026-08-24T00:00:30.000Z" })), reason: "ready" }
+                : issue),
+            },
+          };
+        }),
+      },
+    } as Partial<DaemonRunnerDeps>);
+    const queue = queueWithBlockedDependency();
+    queue.scheduler.policy.idleTimeoutMinutes = 1;
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue(queue);
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ runId: "run-2", stage: "PR_OPEN", issueNumber: 2, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.schedulerRefresh!.refreshDependencies).toHaveBeenCalledTimes(2);
+    expect(deps.runService.start).toHaveBeenCalledWith(2, {});
   });
 
   it("normalizes pending issues added to a scheduler queue via schedulerPending.normalize", async () => {
