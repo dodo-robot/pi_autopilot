@@ -295,6 +295,8 @@ function describePatch(patch: ReconciliationReport["patches"][number]): string {
       return `#${patch.issue} depends on #${patch.dependsOn} — ${patch.reason}`;
     case "REMOVE_DEPENDENCY":
       return `#${patch.issue} no longer depends on #${patch.dependsOn} — ${patch.reason}`;
+    case "SPLIT_ISSUE":
+      return `#${patch.issue} split into ${patch.children.length} issues — ${patch.reason}`;
     case "NEEDS_HUMAN":
       return `${patch.issue !== null ? `#${patch.issue} — ` : ""}${patch.reason}`;
   }

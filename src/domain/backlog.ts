@@ -61,7 +61,7 @@ export const BacklogReportSchema = z.object({
         .nullable(),
       // Keep in sync with LabelAction in ../analysis/label-reconciliation.ts
       labelAction: z
-        .enum(["labeled", "unlabeled", "unchanged", "skipped-in-progress"])
+        .enum(["labeled", "unlabeled", "unchanged", "skipped-in-progress", "skipped-split"])
         .optional(),
     }),
   ),
