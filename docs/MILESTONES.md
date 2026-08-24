@@ -143,6 +143,43 @@ while `MARK_STALE`/`NEEDS_HUMAN` remain hard-skipped.
 
 ---
 
+## 2026-08-24 — `SPLIT_ISSUE` reconciliation patch ✅
+
+**Scope:** The reconciler can propose breaking an oversized issue into
+smaller child issues, and `reconcile-apply` creates them end to end.
+
+- New `SPLIT_ISSUE` `BacklogPatch` variant: a parent issue number plus 2+
+  child `IssueSpec`s (title + full execution-contract enrichment each).
+- Reconciler prompt rule split in two: a mechanical, engineering-only
+  oversized split is proposed directly as `SPLIT_ISSUE`; a split whose
+  slicing is itself a product call still raises `NEEDS_HUMAN`
+  (ambiguityType `PRODUCT`).
+- Classified `requires-approval` and added to `ApplyService`'s
+  `OFFERABLE_REQUIRES_APPROVAL` set (offerable via interactive
+  confirmation; never auto-applied under `--yes` or a prior `"all"`
+  answer), joining `REMOVE_DEPENDENCY`.
+- Apply creates each missing child (matched by title for idempotent
+  partial-run resume), links every child into the parent's epic
+  (append-only — the parent's own epic checklist line is never touched
+  or removed), and upserts a new managed "Split into" checklist section
+  onto the parent issue body.
+- New `split` label marks the parent as a tracking checklist, not a
+  task; apply also best-effort removes `agent:ready` from the parent if
+  present. `reconcileReadyLabel` (and `discover`) now always skip
+  `agent:ready` label writes on any issue carrying the `split` label,
+  ahead of every other readiness check.
+- Idempotency: a second reconciliation run downgrades `SPLIT_ISSUE` to
+  `KEEP` once the parent's body already lists every proposed child.
+- Deliberately out of scope: rewriting other issues' existing
+  dependencies on the split parent, and removing the parent's own line
+  from the epic checklist — both left for a human or a future
+  reconciliation pass.
+
+Design spec: `docs/superpowers/specs/2026-08-24-split-issue-design.md`
+Implementation plan: `docs/superpowers/plans/2026-08-24-split-issue.md`
+
+---
+
 ## 2026-08-23 — Continuous backlog intake ✅
 
 **Scope:** Mutating counterpart to `analyze` and queue-append mechanism for the daemon.
@@ -190,19 +227,17 @@ priority; pick from the top.
   prompt or patch policy.
 - **Apply-all workflow.** Interactive per-patch `all` exists inside one run,
   but there is no broader apply-all command/workflow for a report set.
-- **Remaining patch types:** `SPLIT_ISSUE`, `MERGE_DUPLICATE` —
-  documented in `src/domain/reconciliation.ts` as a future extension of
-  the `BacklogPatch` union. (extend_requirements.md §"Structured patch model")
-  `REMOVE_DEPENDENCY` is fully implemented, including `ApplyService`
-  wiring (see the 2026-08-24 milestone entry above). `MARK_READY` is
-  deliberately excluded; see
+- **Remaining patch type:** `MERGE_DUPLICATE` — documented in
+  `src/domain/reconciliation.ts` as a future extension of the
+  `BacklogPatch` union. (extend_requirements.md §"Structured patch model")
+  `REMOVE_DEPENDENCY` and `SPLIT_ISSUE` are both fully implemented,
+  including `ApplyService` wiring (see the 2026-08-24 milestone entries).
+  `MARK_READY` is deliberately excluded; see
   `docs/superpowers/specs/2026-08-24-reconciliation-remove-dependency-design.md` §6.
 - **Label policy on `CREATE_ISSUE`.** Created issues currently use the
   minimal shipped label behavior; final label taxonomy is still deferred.
 - **Concurrent application.** Apply-safe runs patches sequentially; concurrent
   application and conflict handling are deferred.
-- **Oversized-task detection driving `SPLIT_ISSUE` proposals.**
-  (extend_requirements.md §"Task size and splitting")
 
 ### Concurrency and scheduling (M4) 🔲
 
