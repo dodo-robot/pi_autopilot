@@ -15,7 +15,7 @@ import { ProcessRunner } from "../platform/process-runner.js";
 import { ThinkingLevelSchema } from "../config/schema.js";
 import type { RoleModelEntry, RoleModelOverride } from "../config/schema.js";
 import { RunStore } from "../persistence/run-store.js";
-import { buildDependencySnapshots, detectDependencyCycles } from "../scheduler/dependencies.js";
+import { buildSchedulerIssueInputs } from "../scheduler/dependencies.js";
 import {
   parseOptionalNonNegativeInt,
   parseOptionalPositiveInt,
@@ -25,10 +25,8 @@ import {
 } from "../scheduler/policy.js";
 import {
   createInitialSchedulerState,
-  type InitialSchedulerIssueInput,
   type SchedulerState,
 } from "../scheduler/state.js";
-import { parseWorkspaceScopeFromIssueBody } from "../scheduler/workspace-scope.js";
 import type { RunOverrides } from "../workflow/run-service.js";
 import { resolveIssueRefs } from "./args.js";
 
@@ -196,71 +194,15 @@ async function buildSchedulerState(input: {
   dataDir?: string;
 }): Promise<SchedulerState> {
   const github = await GitHubAdapter.create(input.root, input.runner);
-  const issues: Array<{ issueNumber: number; body: string }> = [];
-  for (const issueNumber of input.issueNumbers) {
-    const issue = await github.getIssue(issueNumber);
-    issues.push({ issueNumber, body: issue.body });
-  }
-
   const runStore = new RunStore(appPaths(input.dataDir).dbPath);
   try {
-    const snapshots = await buildDependencySnapshots({
+    const normalized = await buildSchedulerIssueInputs({
+      root: input.root,
       repository: input.repository,
-      issues,
-      now: () => input.now,
-      getIssueState: async (issueNumber) => (await github.getIssue(issueNumber)).state,
-      hasLocalPrOpen: async (issueNumber) => runStore.hasSuccessfulPrOpenForIssue(
-        input.repository.owner,
-        input.repository.repo,
-        issueNumber,
-      ),
-    });
-    const graph = new Map<number, number[]>(
-      issues.map((issue) => [
-        issue.issueNumber,
-        (snapshots.get(issue.issueNumber) ?? []).map((dependency) => dependency.issueNumber),
-      ]),
-    );
-    const cyclic = detectDependencyCycles(graph);
-    const normalized: InitialSchedulerIssueInput[] = issues.map((issue) => {
-      const dependencies = snapshots.get(issue.issueNumber) ?? [];
-      const hasInvalid = dependencies.some((dependency) => dependency.source === "invalid");
-      const hasUnsatisfied = dependencies.some((dependency) => !dependency.satisfied);
-      const workspaceScope = parseWorkspaceScopeFromIssueBody(issue.body);
-      if (cyclic.has(issue.issueNumber)) {
-        return {
-          issueNumber: issue.issueNumber,
-          dependencies,
-          workspaceScope,
-          initialState: "DEFERRED_INVALID",
-          reason: "dependency cycle",
-        };
-      }
-      if (hasInvalid) {
-        return {
-          issueNumber: issue.issueNumber,
-          dependencies,
-          workspaceScope,
-          initialState: "DEFERRED_INVALID",
-          reason: "invalid dependency metadata",
-        };
-      }
-      if (hasUnsatisfied) {
-        return {
-          issueNumber: issue.issueNumber,
-          dependencies,
-          workspaceScope,
-          initialState: "DEFERRED_DEPENDENCY",
-          reason: "waiting for dependencies",
-        };
-      }
-      return {
-        issueNumber: issue.issueNumber,
-        dependencies,
-        workspaceScope,
-        initialState: "PENDING",
-        reason: "ready",
-      };
+      issueNumbers: input.issueNumbers,
+      now: input.now,
+      github,
+      runStore,
     });
     return createInitialSchedulerState({ policy: input.policy, startedAt: input.now, issues: normalized });
   } finally {

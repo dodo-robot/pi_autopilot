@@ -4,7 +4,8 @@ import type { QueueStore, CompletedRun, DaemonQueue } from "./queue-store.js";
 import type { LogFile } from "./log-file.js";
 import type { PendingQueueStore } from "./pending-queue-store.js";
 import { AGENT_READY_LABEL, AGENT_IN_PROGRESS_LABEL } from "../analysis/label-reconciliation.js";
-import { UNKNOWN_WORKSPACE_SCOPE } from "../scheduler/state.js";
+import { UNKNOWN_WORKSPACE_SCOPE, type InitialSchedulerIssueInput } from "../scheduler/state.js";
+import type { SchedulerPolicy } from "../scheduler/policy.js";
 import {
   findStartableIssue,
   refreshConflictStates,
@@ -41,6 +42,14 @@ export interface DaemonRunnerDeps {
   overrides: RunOverrides;
   registerSignalHandler?: (signal: string, handler: () => void) => void;
   exit?: (code: number) => void;
+  schedulerRefresh?: {
+    refreshDependencies(queue: DaemonQueue): Promise<DaemonQueue>;
+  };
+  schedulerPending?: {
+    normalize(issueNumbers: number[], policy: SchedulerPolicy, now: string): Promise<InitialSchedulerIssueInput[]>;
+  };
+  now?: () => string;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class DaemonRunner {
@@ -78,7 +87,7 @@ export class DaemonRunner {
     }
   }
 
-  private mergePending(queue: DaemonQueue): void {
+  private async mergePending(queue: DaemonQueue): Promise<void> {
     const pending = this.deps.pendingQueueStore.drainAll();
     if (pending.length === 0) return;
     const existing = new Set(queue.issues);
@@ -86,25 +95,51 @@ export class DaemonRunner {
     if (toAdd.length === 0) return;
     queue.issues.push(...toAdd);
     if (queue.scheduler !== undefined) {
+      const now = (this.deps.now ?? (() => new Date().toISOString()))();
+      const normalized = this.deps.schedulerPending === undefined
+        ? toAdd.map((issueNumber) => ({
+            issueNumber,
+            dependencies: [],
+            workspaceScope: UNKNOWN_WORKSPACE_SCOPE,
+            initialState: "PENDING" as const,
+            reason: "pending queue entry",
+          }))
+        : await this.deps.schedulerPending.normalize(toAdd, queue.scheduler.policy, now);
       queue.scheduler = {
         ...queue.scheduler,
         issues: [
           ...queue.scheduler.issues,
-          ...toAdd.map((issueNumber) => ({
-            issueNumber,
-            state: "PENDING" as const,
-            dependencies: [],
-            workspaceScope: UNKNOWN_WORKSPACE_SCOPE,
-            reason: "pending queue entry",
+          ...normalized.map((issue) => ({
+            issueNumber: issue.issueNumber,
+            state: issue.initialState,
+            dependencies: issue.dependencies,
+            workspaceScope: issue.workspaceScope,
+            reason: issue.reason,
             runId: null,
             outcome: null,
           })),
         ],
-        lastUpdatedAt: new Date().toISOString(),
+        lastUpdatedAt: now,
       };
     }
     this.deps.queueStore.write(queue);
     this.deps.logFile.info(`merged ${toAdd.length} pending issue(s): [${toAdd.join(",")}]`);
+  }
+
+  private async idleUntilPendingOrTimeout(queue: DaemonQueue, idleTimeoutMinutes: number): Promise<void> {
+    const now = this.deps.now ?? (() => new Date().toISOString());
+    const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const idleSince = now();
+    queue.scheduler = { ...queue.scheduler!, idleSince, lastUpdatedAt: idleSince };
+    this.deps.queueStore.write(queue);
+    const timeoutMs = idleTimeoutMinutes * 60_000;
+    for (;;) {
+      await this.mergePending(queue);
+      const hasPending = queue.scheduler!.issues.some((issue) => issue.state === "PENDING");
+      if (hasPending) return;
+      if (Date.parse(now()) - Date.parse(idleSince) >= timeoutMs) return;
+      await sleep(1_000);
+    }
   }
 
   async run(): Promise<void> {
@@ -159,7 +194,7 @@ export class DaemonRunner {
       logFile.info("reconciliation: no interrupted runs found");
     }
 
-    this.mergePending(queue);
+    await this.mergePending(queue);
 
     if (queue.scheduler === undefined) {
       await this.runSequentialQueue(queue);
@@ -211,7 +246,7 @@ export class DaemonRunner {
       queue.completedRuns.push(completed);
       queue.currentIndex += 1;
       queueStore.write(queue);
-      this.mergePending(queue);
+      await this.mergePending(queue);
     }
 
     if (this.stopRequested) {
@@ -225,6 +260,8 @@ export class DaemonRunner {
 
   private async runSchedulerQueue(queue: DaemonQueue): Promise<void> {
     const active = new Set<Promise<void>>();
+    let refreshedForBlockedState = false;
+    let idledOnce = false;
 
     const launchAvailable = (): void => {
       for (;;) {
@@ -244,11 +281,32 @@ export class DaemonRunner {
     };
 
     launchAvailable();
-    while (active.size > 0) {
-      await Promise.race(active);
-      this.mergePending(queue);
-      launchAvailable();
+    for (;;) {
+      if (active.size > 0) {
+        await Promise.race(active);
+        await this.mergePending(queue);
+        launchAvailable();
+        if (this.stopRequested) break;
+        continue;
+      }
+
       if (this.stopRequested) break;
+
+      if (!refreshedForBlockedState && this.deps.schedulerRefresh !== undefined) {
+        queue = await this.deps.schedulerRefresh.refreshDependencies(queue);
+        this.deps.queueStore.write(queue);
+        refreshedForBlockedState = true;
+        launchAvailable();
+        if (active.size > 0) continue;
+      }
+
+      if (idledOnce) break;
+      const idleTimeoutMinutes = queue.scheduler!.policy.idleTimeoutMinutes;
+      if (idleTimeoutMinutes === 0) break;
+      idledOnce = true;
+      await this.idleUntilPendingOrTimeout(queue, idleTimeoutMinutes);
+      launchAvailable();
+      if (active.size === 0) break;
     }
 
     if (this.stopRequested) {

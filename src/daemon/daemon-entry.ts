@@ -23,6 +23,7 @@ import { QueueStore } from "./queue-store.js";
 import { PendingQueueStore } from "./pending-queue-store.js";
 import { LogFile } from "./log-file.js";
 import { DaemonRunner } from "./daemon-runner.js";
+import { buildSchedulerIssueInputs, refreshSchedulerDependencies } from "../scheduler/dependencies.js";
 
 async function main(): Promise<void> {
   const cwd = process.env.AUTOPILOT_DAEMON_CWD ?? process.cwd();
@@ -96,6 +97,19 @@ async function main(): Promise<void> {
         transition: (id, from, to, ref) => runStore.transition(id, from as any, to as any, ref),
       },
       overrides: queue.overrides ?? {},
+      schedulerRefresh: {
+        refreshDependencies: async (q) => refreshSchedulerDependencies({ queue: q, github, runStore, now: () => new Date().toISOString() }),
+      },
+      schedulerPending: {
+        normalize: async (issueNumbers, policy, now) => buildSchedulerIssueInputs({
+          root: repository.root,
+          repository: repository.repository,
+          issueNumbers,
+          now,
+          github,
+          runStore,
+        }),
+      },
     });
 
     await runner.run();

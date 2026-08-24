@@ -479,3 +479,124 @@ describe("DaemonRunner scheduler queue", () => {
     expect(writes.at(-1).completedRuns[0].outcome).toBe("FAILED");
   });
 });
+
+function queueWithBlockedDependency() {
+  return {
+    repository: { owner: "acme", repo: "widgets" },
+    issues: [2],
+    currentIndex: 0,
+    startedAt: "2026-08-24T00:00:00.000Z",
+    completedRuns: [],
+    scheduler: createInitialSchedulerState({
+      policy: { maxConcurrentRuns: 1, idleTimeoutMinutes: 0, budgets: { maxElapsedMinutes: null, maxStartedRuns: null, maxFailedRuns: null } },
+      startedAt: "2026-08-24T00:00:00.000Z",
+      issues: [{
+        issueNumber: 2,
+        dependencies: [{ issueNumber: 1, satisfied: false, source: "unsatisfied", checkedAt: "2026-08-24T00:00:00.000Z" }],
+        workspaceScope: { kind: "paths", patterns: ["src/b/**"], source: "issue-contract" },
+        initialState: "DEFERRED_DEPENDENCY",
+        reason: "waiting for #1",
+      }],
+    }),
+  };
+}
+
+describe("DaemonRunner blocked dependency refresh and idle", () => {
+  it("refreshes dependencies once when scheduler is blocked with no active runs", async () => {
+    const deps = makeDeps({
+      schedulerRefresh: {
+        refreshDependencies: vi.fn(async (queue) => {
+          const scheduler = queue.scheduler!;
+          return {
+            ...queue,
+            scheduler: {
+              ...scheduler,
+              issues: scheduler.issues.map((issue) => issue.issueNumber === 2
+                ? { ...issue, state: "PENDING", dependencies: issue.dependencies.map((dep) => ({ ...dep, satisfied: true, source: "github-closed", checkedAt: "2026-08-24T00:02:00.000Z" })), reason: "ready" }
+                : issue),
+              lastBlockedRefreshAt: "2026-08-24T00:02:00.000Z",
+            },
+          };
+        }),
+      },
+    } as Partial<DaemonRunnerDeps>);
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue(queueWithBlockedDependency());
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ runId: "run-2", stage: "PR_OPEN", issueNumber: 2, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.schedulerRefresh!.refreshDependencies).toHaveBeenCalledTimes(1);
+    expect(deps.runService.start).toHaveBeenCalledWith(2, {});
+  });
+
+  it("exits immediately by default when scheduler remains blocked", async () => {
+    const deps = makeDeps({
+      schedulerRefresh: { refreshDependencies: vi.fn(async (queue) => queue) },
+    } as Partial<DaemonRunnerDeps>);
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue(queueWithBlockedDependency());
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.runService.start).not.toHaveBeenCalled();
+    expect(deps.pidFile.delete).toHaveBeenCalled();
+  });
+
+  it("drains pending queue while idling", async () => {
+    const deps = makeDeps({
+      now: vi.fn()
+        .mockReturnValueOnce("2026-08-24T00:00:00.000Z")
+        .mockReturnValueOnce("2026-08-24T00:00:30.000Z")
+        .mockReturnValue("2026-08-24T00:01:01.000Z"),
+      sleep: vi.fn(async () => undefined),
+      schedulerRefresh: { refreshDependencies: vi.fn(async (queue) => queue) },
+    } as Partial<DaemonRunnerDeps>);
+    const queue = queueWithBlockedDependency();
+    queue.scheduler.policy.idleTimeoutMinutes = 1;
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue(queue);
+    (deps.pendingQueueStore.drainAll as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([99])
+      .mockReturnValue([]);
+    (deps.runService.start as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ runId: "run-99", stage: "PR_OPEN", issueNumber: 99, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.runService.start).toHaveBeenCalledWith(99, {});
+  });
+
+  it("normalizes pending issues added to a scheduler queue via schedulerPending.normalize", async () => {
+    const deps = makeDeps({
+      schedulerPending: {
+        normalize: vi.fn(async (issueNumbers) => issueNumbers.map((issueNumber) => ({
+          issueNumber,
+          dependencies: [],
+          workspaceScope: { kind: "paths" as const, patterns: ["src/c/**"], source: "issue-contract" as const },
+          initialState: "PENDING" as const,
+          reason: "ready",
+        }))),
+      },
+    } as Partial<DaemonRunnerDeps>);
+    (deps.queueStore.read as ReturnType<typeof vi.fn>).mockReturnValue({
+      repository: { owner: "acme", repo: "widgets" }, issues: [28], currentIndex: 0,
+      startedAt: new Date().toISOString(), completedRuns: [],
+      scheduler: createInitialSchedulerState({
+        policy: { maxConcurrentRuns: 1, idleTimeoutMinutes: 0, budgets: { maxElapsedMinutes: null, maxStartedRuns: null, maxFailedRuns: null } },
+        startedAt: "2026-08-24T00:00:00.000Z",
+        issues: [{ issueNumber: 28, dependencies: [], workspaceScope: { kind: "paths", patterns: ["src/a/**"], source: "issue-contract" }, initialState: "PENDING", reason: "ready" }],
+      }),
+    });
+    (deps.pendingQueueStore.drainAll as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce([99])
+      .mockReturnValue([]);
+    (deps.runService.start as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ runId: "run-1", stage: "PR_OPEN", issueNumber: 28, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null })
+      .mockResolvedValueOnce({ runId: "run-2", stage: "PR_OPEN", issueNumber: 99, repository: { owner: "acme", repo: "widgets" }, publication: null, reason: null });
+
+    await new DaemonRunner(deps).run();
+
+    expect(deps.schedulerPending!.normalize).toHaveBeenCalledWith([99], expect.any(Object), expect.any(String));
+    const writes = (deps.queueStore.write as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    const withNinetyNine = writes.find((q) => q.scheduler?.issues.some((issue: { issueNumber: number }) => issue.issueNumber === 99));
+    expect(withNinetyNine.scheduler.issues.find((issue: { issueNumber: number }) => issue.issueNumber === 99).workspaceScope).toEqual({ kind: "paths", patterns: ["src/c/**"], source: "issue-contract" });
+  });
+});
