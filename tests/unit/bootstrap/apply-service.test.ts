@@ -41,6 +41,7 @@ class FakeGitHub implements ExtendedGitHubPort {
     return makeIssue(1, "stub");
   }
   async createIssueComment(): Promise<void> {}
+  async closeIssue(): Promise<void> {}
   async findPullRequestByHead() {
     return null;
   }
