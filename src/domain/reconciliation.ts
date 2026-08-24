@@ -67,9 +67,9 @@ export type PatchPolicy = z.infer<typeof PatchPolicySchema>;
 /**
  * Structured reconciliation patch. This milestone implements the subset
  * documented in the design spec (KEEP/ENRICH_ISSUE/CREATE_ISSUE/
- * ADD_DEPENDENCY/REMOVE_DEPENDENCY/MARK_STALE/NEEDS_HUMAN);
- * SPLIT_ISSUE/MERGE_DUPLICATE are documented as a future extension of this
- * same discriminated union. MARK_READY is deliberately excluded — see
+ * ADD_DEPENDENCY/REMOVE_DEPENDENCY/SPLIT_ISSUE/MARK_STALE/NEEDS_HUMAN);
+ * MERGE_DUPLICATE is documented as a future extension of this same
+ * discriminated union. MARK_READY is deliberately excluded — see
  * docs/superpowers/specs/2026-08-24-reconciliation-remove-dependency-design.md §6.
  */
 export const BacklogPatchSchema = z.discriminatedUnion("type", [
@@ -100,6 +100,12 @@ export const BacklogPatchSchema = z.discriminatedUnion("type", [
     type: z.literal("REMOVE_DEPENDENCY"),
     issue: z.number().int().positive(),
     dependsOn: z.number().int().positive(),
+    reason: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal("SPLIT_ISSUE"),
+    issue: z.number().int().positive(),
+    children: z.array(IssueSpecSchema).min(2),
     reason: z.string().min(1),
   }),
   z.object({

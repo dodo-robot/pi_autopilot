@@ -152,6 +152,77 @@ describe("BacklogPatchSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts a SPLIT_ISSUE patch with two children", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "SPLIT_ISSUE",
+      issue: 17,
+      reason: "spans two independent behavioral outcomes",
+      children: [
+        {
+          title: "Reject revoked sessions during authentication",
+          enrichment: {
+            goal: "A revoked session is rejected at the next authentication check",
+            sourceRequirements: ["REQ-AUTH-012"],
+            acceptanceCriteria: ["A revoked session's token is rejected with 401"],
+            constraints: [],
+            nonGoals: [],
+            validation: ["npm test -- auth"],
+            relevantAreas: ["src/auth/"],
+          },
+        },
+        {
+          title: "Rate-limit failed logins",
+          enrichment: {
+            goal: "Repeated failed logins from one account are throttled",
+            sourceRequirements: ["REQ-AUTH-013"],
+            acceptanceCriteria: ["The 6th failed login within a minute is rejected"],
+            constraints: [],
+            nonGoals: [],
+            validation: ["npm test -- auth"],
+            relevantAreas: ["src/auth/"],
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a SPLIT_ISSUE patch with fewer than two children", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "SPLIT_ISSUE",
+      issue: 17,
+      reason: "too large",
+      children: [
+        {
+          title: "Only one child",
+          enrichment: {
+            goal: "x",
+            sourceRequirements: [],
+            acceptanceCriteria: [],
+            constraints: [],
+            nonGoals: [],
+            validation: [],
+            relevantAreas: [],
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a SPLIT_ISSUE patch with an empty reason", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "SPLIT_ISSUE",
+      issue: 17,
+      reason: "",
+      children: [
+        { title: "A", enrichment: { goal: "x", sourceRequirements: [], acceptanceCriteria: [], constraints: [], nonGoals: [], validation: [], relevantAreas: [] } },
+        { title: "B", enrichment: { goal: "x", sourceRequirements: [], acceptanceCriteria: [], constraints: [], nonGoals: [], validation: [], relevantAreas: [] } },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts a MARK_STALE patch", () => {
     const result = BacklogPatchSchema.safeParse({
       type: "MARK_STALE",
@@ -183,7 +254,7 @@ describe("BacklogPatchSchema", () => {
 
   it("rejects an unknown patch type", () => {
     const result = BacklogPatchSchema.safeParse({
-      type: "SPLIT_ISSUE",
+      type: "BOGUS_TYPE",
       issue: 17,
       reason: "too large",
     });
