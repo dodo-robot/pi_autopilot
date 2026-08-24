@@ -6,6 +6,7 @@ import {
   markIssueRunning,
   mergePendingIssues,
   refreshConflictStates,
+  toCompletedRun,
   updateBudgetUsage,
 } from "../../../src/scheduler/scheduler.js";
 import {
@@ -158,9 +159,34 @@ describe("scheduler state", () => {
       workspaceScope: pathScope("src/b/**"),
       initialState: "PENDING",
       reason: "pending queue entry",
-    }], "2026-08-24T00:03:00.000Z");
+    }]);
 
     expect(updated.issues.map((issue) => issue.issueNumber)).toEqual([1, 2]);
-    expect(updated.lastUpdatedAt).toBe("2026-08-24T00:03:00.000Z");
+    expect(updated.lastUpdatedAt).toBe(state.lastUpdatedAt);
+  });
+
+  it("converts only terminal run summaries into completed runs", () => {
+    expect(toCompletedRun({
+      runId: "run-1",
+      stage: "PR_OPEN",
+      repository: { owner: "acme", repo: "widgets" },
+      issueNumber: 1,
+      publication: null,
+      reason: null,
+    }, "2026-08-24T00:02:00.000Z")).toEqual({
+      issueNumber: 1,
+      outcome: "PR_OPEN",
+      completedAt: "2026-08-24T00:02:00.000Z",
+      runId: "run-1",
+    });
+
+    expect(() => toCompletedRun({
+      runId: "run-1",
+      stage: "IMPLEMENTATION",
+      repository: { owner: "acme", repo: "widgets" },
+      issueNumber: 1,
+      publication: null,
+      reason: null,
+    }, "2026-08-24T00:02:00.000Z")).toThrow(/non-terminal run stage/);
   });
 });

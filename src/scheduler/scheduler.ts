@@ -153,7 +153,6 @@ export function completeIssue(
 export function mergePendingIssues(
   state: SchedulerState,
   issueInputs: InitialSchedulerIssueInput[],
-  mergedAt: string,
 ): SchedulerState {
   const existing = new Set(state.issues.map((issue) => issue.issueNumber));
   const newIssues = issueInputs
@@ -170,17 +169,28 @@ export function mergePendingIssues(
   return {
     ...state,
     issues: [...state.issues, ...newIssues],
-    lastUpdatedAt: mergedAt,
   };
+}
+
+function isCompletedRunOutcome(stage: RunSummary["stage"]): stage is CompletedRun["outcome"] {
+  return (
+    stage === "PR_OPEN" ||
+    stage === "BLOCKED" ||
+    stage === "NEEDS_REFINEMENT" ||
+    stage === "FAILED"
+  );
 }
 
 export function toCompletedRun(
   summary: RunSummary,
   completedAt: string,
 ): CompletedRun {
+  if (!isCompletedRunOutcome(summary.stage)) {
+    throw new Error(`cannot convert non-terminal run stage ${summary.stage} to completed run`);
+  }
   return {
     issueNumber: summary.issueNumber,
-    outcome: summary.stage as CompletedRun["outcome"],
+    outcome: summary.stage,
     completedAt,
     runId: summary.runId,
   };
