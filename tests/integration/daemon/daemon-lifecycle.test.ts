@@ -139,4 +139,36 @@ describe("daemon lifecycle (integration)", () => {
     );
     expect(queue.completedRuns).toHaveLength(0);
   });
+
+  it("picks up an issue added via queue add while the daemon is mid-run", async () => {
+    writeQueue(dataDir, [28, 29]);
+    const { pid, wait } = spawnFakeDaemon(dataDir, { fakeDelayMs: 200 });
+
+    // Wait for daemon to start and pick up first issue
+    await waitUntil(() => isProcessAlive(pid));
+    // Give it a moment to start running the first issue
+    await new Promise((r) => setTimeout(r, 80));
+
+    // Inject a new issue via queue-pending.json while daemon is running
+    const daemonDir = path.join(dataDir, "daemon");
+    const queuePendingPath = path.join(daemonDir, "queue-pending.json");
+    writeFileSync(
+      queuePendingPath,
+      JSON.stringify({ issues: [99] }),
+    );
+
+    const exitCode = await wait();
+    expect(exitCode).toBe(0);
+
+    const queue = JSON.parse(
+      readFileSync(path.join(dataDir, "daemon", "queue.json"), "utf8"),
+    );
+    // Should have completed all three issues: 28, 29, and the mid-run added 99
+    expect(queue.completedRuns).toHaveLength(3);
+    const completedIssues = queue.completedRuns.map((r) => r.issueNumber);
+    expect(completedIssues).toContain(28);
+    expect(completedIssues).toContain(29);
+    expect(completedIssues).toContain(99);
+  });
 });
+

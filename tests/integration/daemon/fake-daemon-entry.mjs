@@ -15,6 +15,7 @@ const dataDir =
 const daemonDir = path.join(dataDir, "daemon");
 const pidPath = path.join(daemonDir, "pid");
 const queuePath = path.join(daemonDir, "queue.json");
+const queuePendingPath = path.join(daemonDir, "queue-pending.json");
 const logPath = path.join(daemonDir, "daemon.log");
 
 function log(msg) {
@@ -32,6 +33,23 @@ function atomicWrite(filePath, data) {
   renameSync(tmp, filePath);
 }
 
+function drainPendingQueue(queue) {
+  if (!existsSync(queuePendingPath)) return false;
+  const pending = JSON.parse(readFileSync(queuePendingPath, "utf8"));
+  const newIssues = pending.issues.filter(
+    (issueNum) => !queue.issues.includes(issueNum)
+  );
+  if (newIssues.length === 0) {
+    atomicWrite(queuePendingPath, JSON.stringify({ issues: [] }));
+    return false;
+  }
+  queue.issues.push(...newIssues);
+  atomicWrite(queuePath, JSON.stringify(queue, null, 2));
+  atomicWrite(queuePendingPath, JSON.stringify({ issues: [] }));
+  log(`drained ${newIssues.length} issue(s) from pending queue: ${newIssues.join(", ")}`);
+  return true;
+}
+
 mkdirSync(daemonDir, { recursive: true });
 writeFileSync(pidPath, String(process.pid));
 log(`fake-daemon started pid=${process.pid}`);
@@ -45,6 +63,9 @@ process.on("SIGTERM", () => {
   log("SIGTERM received");
   stopRequested = true;
 });
+
+// Drain pending queue once before starting the main loop
+drainPendingQueue(queue);
 
 for (let i = queue.currentIndex; i < queue.issues.length; i++) {
   if (stopRequested) break;
@@ -61,6 +82,8 @@ for (let i = queue.currentIndex; i < queue.issues.length; i++) {
   queue.currentIndex = i + 1;
   atomicWrite(queuePath, JSON.stringify(queue, null, 2));
   log(`run complete issue=${issueNumber} outcome=${fakeOutcome}`);
+  // Drain pending queue after each iteration
+  drainPendingQueue(queue);
 }
 
 log("queue exhausted");
