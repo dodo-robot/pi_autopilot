@@ -89,6 +89,21 @@ export function registerStatusCommand(
             runStore.close();
           }
         }
+        if (opts.json === true) {
+          stdout(JSON.stringify({
+            daemon: {
+              pid,
+              uptimeMs,
+              queue,
+              scheduler: queue.scheduler ?? null,
+              currentIssue,
+              currentStage,
+              remainingIssues,
+              completedRuns: queue.completedRuns,
+            },
+          }, null, 2));
+          return;
+        }
         stdout(formatDaemonStatus({
           pid,
           uptimeMs,
@@ -97,6 +112,7 @@ export function registerStatusCommand(
           currentStartedAt: null,
           remainingIssues,
           completedRuns: queue.completedRuns,
+          ...(queue.scheduler !== undefined ? { scheduler: queue.scheduler } : {}),
         }));
         return;
       }

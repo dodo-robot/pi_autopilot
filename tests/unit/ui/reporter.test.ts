@@ -3,7 +3,9 @@ import {
   DEFAULT_FRAMES,
   Reporter,
   composeSpinner,
+  formatDaemonStatus,
 } from "../../../src/ui/reporter.js";
+import { createInitialSchedulerState } from "../../../src/scheduler/state.js";
 
 const CLEAR_LINE = "\r\x1b[2K";
 
@@ -99,5 +101,31 @@ describe("Reporter", () => {
     vi.advanceTimersByTime(1000);
     expect(rawWrite).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("formatDaemonStatus", () => {
+  it("formats scheduler daemon status with summary and issue table", () => {
+    const output = formatDaemonStatus({
+      pid: 123,
+      uptimeMs: 60_000,
+      currentIssue: null,
+      currentStage: null,
+      currentStartedAt: null,
+      remainingIssues: [],
+      completedRuns: [],
+      scheduler: createInitialSchedulerState({
+        policy: { maxConcurrentRuns: 2, idleTimeoutMinutes: 0, budgets: { maxElapsedMinutes: 120, maxStartedRuns: 10, maxFailedRuns: 3 } },
+        startedAt: "2026-08-24T00:00:00.000Z",
+        issues: [
+          { issueNumber: 1, dependencies: [], workspaceScope: { kind: "paths", patterns: ["src/a/**"], source: "issue-contract" }, initialState: "PENDING", reason: "ready" },
+        ],
+      }),
+    });
+
+    expect(output).toContain("scheduler 0/2 active");
+    expect(output).toContain("Issue");
+    expect(output).toContain("#1");
+    expect(output).toContain("PENDING");
   });
 });

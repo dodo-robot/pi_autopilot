@@ -7,6 +7,7 @@ import { RunStore } from "../../../src/persistence/run-store.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DaemonQueue } from "../../../src/daemon/queue-store.js";
+import { createInitialSchedulerState } from "../../../src/scheduler/state.js";
 
 function makeDeps(tmpDir: string, overrides: Partial<StatusCommandDeps> = {}): StatusCommandDeps {
   return {
@@ -28,6 +29,35 @@ function writeQueue(tmpDir: string, queue: DaemonQueue): void {
   const daemonDir = path.join(tmpDir, "daemon");
   mkdirSync(daemonDir, { recursive: true });
   writeFileSync(path.join(daemonDir, "queue.json"), JSON.stringify(queue));
+}
+
+function queueWithSchedulerIssues(input: {
+  maxConcurrentRuns: number;
+  issues: Array<{ issueNumber: number; scope: string }>;
+}): DaemonQueue {
+  const policy = {
+    maxConcurrentRuns: input.maxConcurrentRuns,
+    idleTimeoutMinutes: 0,
+    budgets: { maxElapsedMinutes: null, maxStartedRuns: null, maxFailedRuns: null },
+  };
+  return {
+    repository: { owner: "acme", repo: "widgets" },
+    issues: input.issues.map((issue) => issue.issueNumber),
+    currentIndex: 0,
+    startedAt: "2026-08-24T00:00:00.000Z",
+    completedRuns: [],
+    scheduler: createInitialSchedulerState({
+      policy,
+      startedAt: "2026-08-24T00:00:00.000Z",
+      issues: input.issues.map((issue) => ({
+        issueNumber: issue.issueNumber,
+        dependencies: [],
+        workspaceScope: { kind: "paths", patterns: [issue.scope], source: "issue-contract" },
+        initialState: "PENDING",
+        reason: "ready",
+      })),
+    }),
+  };
 }
 
 async function runStatus(deps: StatusCommandDeps, args: string[] = []): Promise<void> {
@@ -102,6 +132,22 @@ describe("status command — daemon block", () => {
       .map((c: unknown[]) => c[0])
       .join("\n");
     expect(output).toMatch(/Current\s+#28\s+\[READINESS_CHECK\]/);
+  });
+
+  it("includes scheduler state in daemon --json output", async () => {
+    writePid(tmpDir, process.pid);
+    writeQueue(tmpDir, queueWithSchedulerIssues({
+      maxConcurrentRuns: 2,
+      issues: [{ issueNumber: 1, scope: "src/a/**" }, { issueNumber: 2, scope: "src/b/**" }],
+    }));
+    const lines: string[] = [];
+    const deps = makeDeps(tmpDir, { stdout: (line) => lines.push(line) });
+
+    await runStatus(deps, ["--json"]);
+
+    const parsed = JSON.parse(lines.join(""));
+    expect(parsed.daemon.scheduler.policy.maxConcurrentRuns).toBe(2);
+    expect(parsed.daemon.scheduler.issues).toHaveLength(2);
   });
 
   it("existing status <run-id> still works", async () => {

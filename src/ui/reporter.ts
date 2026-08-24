@@ -1,4 +1,5 @@
 import type { CompletedRun } from "../daemon/queue-store.js";
+import type { SchedulerState } from "../scheduler/state.js";
 
 export const DEFAULT_FRAMES: readonly string[] = [
   "⠋",
@@ -149,6 +150,7 @@ export function formatDaemonStatus(opts: {
   currentStartedAt: string | null;
   remainingIssues: number[];
   completedRuns: CompletedRun[];
+  scheduler?: SchedulerState;
 }): string {
   const uptimeSec = Math.floor(opts.uptimeMs / 1000);
   const h = Math.floor(uptimeSec / 3600);
@@ -158,6 +160,19 @@ export function formatDaemonStatus(opts: {
     h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
 
   const lines: string[] = [];
+
+  if (opts.scheduler !== undefined) {
+    const scheduler = opts.scheduler;
+    lines.push(`Daemon      running  PID ${opts.pid}  scheduler ${scheduler.activeRuns.length}/${scheduler.policy.maxConcurrentRuns} active`);
+    lines.push(`Budget      started ${scheduler.budgets.startedRuns}/${formatCap(scheduler.policy.budgets.maxStartedRuns)}  failed ${scheduler.budgets.failedRuns}/${formatCap(scheduler.policy.budgets.maxFailedRuns)}  elapsed ${scheduler.budgets.elapsedMinutes}m/${formatCap(scheduler.policy.budgets.maxElapsedMinutes, "m")}`);
+    lines.push("");
+    lines.push("Issue  State                 Reason");
+    for (const issue of scheduler.issues) {
+      lines.push(`#${issue.issueNumber}    ${issue.state.padEnd(20)}  ${issue.reason ?? issue.outcome ?? ""}`);
+    }
+    return lines.join("\n");
+  }
+
   lines.push(`Daemon    running  PID ${opts.pid}  uptime ${uptime}`);
 
   if (opts.currentIssue !== null) {
@@ -182,4 +197,8 @@ export function formatDaemonStatus(opts: {
   }
 
   return lines.join("\n");
+}
+
+function formatCap(value: number | null, suffix = ""): string {
+  return value === null ? "∞" : `${value}${suffix}`;
 }
