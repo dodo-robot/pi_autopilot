@@ -7,6 +7,7 @@ import {
   renderRemoveDependencyPreview,
   renderCreatePreview,
   renderSplitPreview,
+  renderMergeDuplicatePreview,
 } from "../../../src/reconciliation/apply-preview.js";
 
 describe("confirmMenu", () => {
@@ -202,6 +203,21 @@ describe("confirmMenu", () => {
       const result = renderSplitPreview(patch);
       expect(result).toContain("- Child A: (no goal)");
       expect(result).toContain("- Child B: Has a goal");
+    });
+  });
+
+  describe("renderMergeDuplicatePreview", () => {
+    it("shows both issue numbers and which one closes", () => {
+      const preview = renderMergeDuplicatePreview({
+        type: "MERGE_DUPLICATE",
+        keep: 120,
+        duplicate: 123,
+        reason: "same behavioral outcome",
+        policy: "requires-approval",
+      });
+      expect(preview).toContain("#120");
+      expect(preview).toContain("#123");
+      expect(preview).toContain("close");
     });
   });
 });
