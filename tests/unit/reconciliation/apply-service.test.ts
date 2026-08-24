@@ -118,6 +118,22 @@ class FakeGitHub implements GitHubPort {
   }
 
   async ensureLabel(): Promise<void> {}
+
+  labelsByIssue = new Map<number, Set<string>>();
+
+  async listLabels(number: number): Promise<string[]> {
+    return [...(this.labelsByIssue.get(number) ?? new Set())];
+  }
+
+  async addLabel(number: number, name: string): Promise<void> {
+    const set = this.labelsByIssue.get(number) ?? new Set();
+    set.add(name);
+    this.labelsByIssue.set(number, set);
+  }
+
+  async removeLabel(number: number, name: string): Promise<void> {
+    this.labelsByIssue.get(number)?.delete(name);
+  }
 }
 
 class FakeGitHubWithFail extends FakeGitHub {
@@ -644,6 +660,267 @@ describe("ApplyService.apply", () => {
     const result = await service({ confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
 
     expect(result.entries.map((e) => e.patchType)).toEqual(["ADD_DEPENDENCY", "REMOVE_DEPENDENCY"]);
+  });
+
+  it("offers SPLIT_ISSUE interactively, creates children, links them to the epic, and marks the parent split", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(20, makeIssue(20, "Auth hardening", "Handles too much at once"));
+    github.labelsByIssue.set(20, new Set(["agent:ready"]));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "SPLIT_ISSUE",
+          issue: 20,
+          reason: "spans two independent behavioral outcomes",
+          children: [
+            { title: "Reject revoked sessions", enrichment: enrichment("Revoked sessions are rejected") },
+            { title: "Rate-limit failed logins", enrichment: enrichment("Failed logins are throttled") },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+    const previews: string[] = [];
+    let prompts = 0;
+
+    const result = await service({
+      onPreview: (text) => previews.push(text),
+      confirmMenu: async () => {
+        prompts += 1;
+        return "apply";
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(prompts).toBe(1);
+    expect(previews[0]).toContain("split #20 into 2 issues:");
+    expect(github.created.map((c) => c.title)).toEqual(["Reject revoked sessions", "Rate-limit failed logins"]);
+    expect(github.created.every((c) => c.labels.includes("task"))).toBe(true);
+
+    const epicBody = github.issues.get(12)?.body ?? "";
+    expect(epicBody).toContain("#15 OAuth");
+    expect(epicBody).toMatch(/- \[ \] #\d+ Reject revoked sessions/);
+    expect(epicBody).toMatch(/- \[ \] #\d+ Rate-limit failed logins/);
+
+    const parentBody = github.issues.get(20)?.body ?? "";
+    expect(parentBody).toContain("Handles too much at once");
+    expect(parentBody).toContain("## Split into");
+    expect(parentBody).toMatch(/- \[ \] #\d+ Reject revoked sessions/);
+    expect(parentBody).toMatch(/- \[ \] #\d+ Rate-limit failed logins/);
+
+    expect(await github.listLabels(20)).toContain("split");
+    expect(await github.listLabels(20)).not.toContain("agent:ready");
+
+    expect(result.summary.applied).toBe(1);
+    expect(result.entries[0]).toMatchObject({
+      outcome: { status: "applied" },
+    });
+    expect(result.entries[0]?.appliedIssueNumbers).toHaveLength(2);
+  });
+
+  it("never auto-applies SPLIT_ISSUE under --yes, recording it as requires-approval", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(20, makeIssue(20, "Auth hardening", "Handles too much at once"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "SPLIT_ISSUE",
+          issue: 20,
+          reason: "spans two independent behavioral outcomes",
+          children: [
+            { title: "Child A", enrichment: enrichment("Goal A") },
+            { title: "Child B", enrichment: enrichment("Goal B") },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service().apply(analysisId, opts);
+
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "requires-approval" });
+    expect(github.created).toHaveLength(0);
+  });
+
+  it("does not fast-forward SPLIT_ISSUE when an earlier patch answered all", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(15, makeIssue(15, "OAuth", "Handles OAuth"));
+    github.issues.set(20, makeIssue(20, "Auth hardening", "Handles too much at once"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "ENRICH_ISSUE",
+          issue: 15,
+          patch: enrichment("Add OAuth refresh"),
+          reason: "missing criteria",
+          policy: "auto-safe",
+        },
+        {
+          type: "SPLIT_ISSUE",
+          issue: 20,
+          reason: "spans two independent behavioral outcomes",
+          children: [
+            { title: "Child A", enrichment: enrichment("Goal A") },
+            { title: "Child B", enrichment: enrichment("Goal B") },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+    const answers: string[] = ["all"];
+    let prompts = 0;
+
+    const result = await service({
+      confirmMenu: async () => {
+        prompts += 1;
+        return (answers.shift() as "all") ?? "apply";
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(prompts).toBe(2);
+    expect(result.entries.map((e) => e.patchType)).toEqual(["ENRICH_ISSUE", "SPLIT_ISSUE"]);
+    expect(result.entries[1]?.outcome).toEqual({ status: "applied" });
+  });
+
+  it("skips SPLIT_ISSUE idempotently when the parent already lists all proposed children", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(
+      20,
+      makeIssue(
+        20,
+        "Auth hardening",
+        "Handles too much\n\n<!-- autopilot-split:start -->\n## Split into\n\n" +
+          "- [ ] #124 Child A\n- [ ] #125 Child B\n<!-- autopilot-split:end -->",
+      ),
+    );
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "SPLIT_ISSUE",
+          issue: 20,
+          reason: "spans two independent behavioral outcomes",
+          children: [
+            { title: "Child A", enrichment: enrichment("Goal A") },
+            { title: "Child B", enrichment: enrichment("Goal B") },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service({ confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
+
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "idempotent" });
+    expect(github.created).toHaveLength(0);
+  });
+
+  it("resumes a partially-applied SPLIT_ISSUE by only creating the missing child", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(20, makeIssue(20, "Auth hardening", "Handles too much at once"));
+    github.issues.set(30, makeIssue(30, "Child A", "already created by a prior partial run"));
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "SPLIT_ISSUE",
+          issue: 20,
+          reason: "spans two independent behavioral outcomes",
+          children: [
+            { title: "Child A", enrichment: enrichment("Goal A") },
+            { title: "Child B", enrichment: enrichment("Goal B") },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service({ confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
+
+    expect(github.created.map((c) => c.title)).toEqual(["Child B"]);
+    expect(result.entries[0]?.outcome).toEqual({ status: "applied" });
+    expect(result.entries[0]?.appliedIssueNumbers).toEqual(expect.arrayContaining([30]));
+
+    const epicBody = github.issues.get(12)?.body ?? "";
+    expect(epicBody).toContain("- [ ] #30 Child A");
+  });
+
+  it("previews SPLIT_ISSUE without mutation when previewOnly is set", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(20, makeIssue(20, "Auth hardening", "Handles too much at once"));
+    const previews: string[] = [];
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "SPLIT_ISSUE",
+          issue: 20,
+          reason: "spans two independent behavioral outcomes",
+          children: [
+            { title: "Child A", enrichment: enrichment("Goal A") },
+            { title: "Child B", enrichment: enrichment("Goal B") },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service({ onPreview: (text) => previews.push(text) }).apply(analysisId, {
+      yes: true,
+      previewOnly: true,
+    });
+
+    expect(result.summary.previewed).toBe(1);
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "preview-only" });
+    expect(previews[0]).toContain("split #20 into 2 issues:");
+    expect(github.created).toHaveLength(0);
+  });
+
+  it("fails SPLIT_ISSUE cleanly when a child creation call throws, without losing the report entry", async () => {
+    class FakeGitHubFailingCreate extends FakeGitHub {
+      override async createIssue(input: { title: string; body: string; labels: string[] }): Promise<GitHubIssue> {
+        if (input.title === "Child B") throw new Error("github 500");
+        return super.createIssue(input);
+      }
+    }
+    const failingGithub = new FakeGitHubFailingCreate();
+    github = failingGithub;
+    github.issues.set(12, epic());
+    github.issues.set(20, makeIssue(20, "Auth hardening", "Handles too much at once"));
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "SPLIT_ISSUE",
+          issue: 20,
+          reason: "spans two independent behavioral outcomes",
+          children: [
+            { title: "Child A", enrichment: enrichment("Goal A") },
+            { title: "Child B", enrichment: enrichment("Goal B") },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service({ github, confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
+
+    expect(result.summary.failed).toBe(1);
+    expect(result.entries[0]?.outcome.status).toBe("failed");
+    expect(github.created.map((c) => c.title)).toEqual(["Child A"]);
+    const parentBody = github.issues.get(20)?.body ?? "";
+    expect(parentBody).not.toContain("## Split into");
   });
 
   it("enforces the report staleness guard unless force is set", async () => {

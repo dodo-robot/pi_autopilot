@@ -15,9 +15,12 @@ import {
   renderDependencyPreview,
   renderEnrichPreview,
   renderRemoveDependencyPreview,
+  renderSplitPreview,
   type MenuAnswer,
 } from "./apply-preview.js";
 import { renderReconciliationSection, upsertReconciliationSection } from "./managed-section.js";
+import { splitAlreadyApplied, upsertSplitSection } from "./managed-split-section.js";
+import { AGENT_READY_LABEL, SPLIT_LABEL } from "../analysis/label-reconciliation.js";
 import type { ReconciliationReport } from "./reconciliation-service.js";
 import { RefinementSectionError } from "../readiness/refinement-section.js";
 
@@ -32,7 +35,10 @@ const DEFAULT_STALE_HOURS = 168;
  * requires-approval type (MARK_STALE, NEEDS_HUMAN) is hard-skipped before
  * prepare() ever runs.
  */
-const OFFERABLE_REQUIRES_APPROVAL: ReadonlySet<BacklogPatchType> = new Set(["REMOVE_DEPENDENCY"]);
+const OFFERABLE_REQUIRES_APPROVAL: ReadonlySet<BacklogPatchType> = new Set([
+  "REMOVE_DEPENDENCY",
+  "SPLIT_ISSUE",
+]);
 
 export interface ApplyOptions {
   /** Unattended: apply auto-safe patches and skip requires-approval patches. */
@@ -123,7 +129,7 @@ export class ApplyService {
 
       let prepared: Prepared;
       try {
-        prepared = await this.prepare(patch);
+        prepared = await this.prepare(patch, report.epicRef);
       } catch (error) {
         recordEntry(entries, summary, failedEntry(patch, error));
         continue;
@@ -212,7 +218,7 @@ export class ApplyService {
     return `apply ${patch.type}${target}? [y] apply / [n] skip / [a] all / [q] abort `;
   }
 
-  private async prepare(patch: ReconciledPatch): Promise<Prepared> {
+  private async prepare(patch: ReconciledPatch, epicRef: number): Promise<Prepared> {
     switch (patch.type) {
       case "CREATE_ISSUE":
         return this.prepareCreate(patch);
@@ -222,6 +228,8 @@ export class ApplyService {
         return this.prepareDependency(patch);
       case "REMOVE_DEPENDENCY":
         return this.prepareRemoveDependency(patch);
+      case "SPLIT_ISSUE":
+        return this.prepareSplit(patch, epicRef);
       case "KEEP":
       case "MARK_STALE":
       case "NEEDS_HUMAN":
@@ -326,6 +334,81 @@ export class ApplyService {
       entryBase: entryBase(patch, `remove dependency #${patch.dependsOn} from #${patch.issue}`),
       previewText: renderRemoveDependencyPreview(current.body, patch.dependsOn),
       applyFresh: () => this.applyRemoveDependencyFresh(patch),
+    };
+  }
+
+  private async prepareSplit(
+    patch: Extract<ReconciledPatch, { type: "SPLIT_ISSUE" }>,
+    epicRef: number,
+  ): Promise<Prepared> {
+    let current: GitHubIssue;
+    try {
+      current = await this.deps.github.getIssue(patch.issue);
+    } catch (error) {
+      return {
+        kind: "skip",
+        entry: skipEntry(patch, "failed-to-fetch", error instanceof Error ? error.message : String(error)),
+      };
+    }
+
+    if (splitAlreadyApplied(current.body, patch.children)) {
+      return {
+        kind: "skip",
+        entry: skipEntry(patch, "idempotent", "already split into the proposed children"),
+      };
+    }
+
+    return {
+      kind: "write",
+      patch,
+      entryBase: entryBase(patch, `split #${patch.issue} into ${patch.children.length} issues`),
+      previewText: renderSplitPreview(patch),
+      applyFresh: () => this.applySplitFresh(patch, epicRef),
+    };
+  }
+
+  private async applySplitFresh(
+    patch: Extract<ReconciledPatch, { type: "SPLIT_ISSUE" }>,
+    epicRef: number,
+  ): Promise<ApplyEntry> {
+    const current = await this.deps.github.getIssue(patch.issue);
+    if (splitAlreadyApplied(current.body, patch.children)) {
+      return skipEntry(patch, "idempotent", "already split into the proposed children");
+    }
+
+    const childRefs: Array<{ number: number; title: string }> = [];
+    for (const child of patch.children) {
+      const existing = await this.deps.github.findIssueByTitle(child.title);
+      const issue =
+        existing ??
+        (await this.deps.github.createIssue({
+          title: child.title,
+          body: renderReconciliationSection(child.enrichment),
+          labels: ["task"],
+        }));
+      await this.linkIssueToEpic(epicRef, issue);
+      childRefs.push({ number: issue.number, title: issue.title });
+    }
+
+    await this.deps.github.updateIssueBody(
+      patch.issue,
+      upsertSplitSection(current.body, childRefs),
+    );
+
+    try {
+      await this.deps.github.addLabel(patch.issue, SPLIT_LABEL);
+      const labels = await this.deps.github.listLabels(patch.issue);
+      if (labels.includes(AGENT_READY_LABEL)) {
+        await this.deps.github.removeLabel(patch.issue, AGENT_READY_LABEL);
+      }
+    } catch {
+      // best-effort: label-write failures never fail an otherwise-successful split
+    }
+
+    return {
+      ...entryBase(patch, `split #${patch.issue} into ${childRefs.length} issues`),
+      outcome: { status: "applied" },
+      appliedIssueNumbers: childRefs.map((ref) => ref.number),
     };
   }
 
@@ -513,6 +596,7 @@ function sortPatches(patches: ReconciledPatch[]): ReconciledPatch[] {
     ENRICH_ISSUE: 1,
     ADD_DEPENDENCY: 2,
     REMOVE_DEPENDENCY: 3,
+    SPLIT_ISSUE: 4,
   };
   return [...patches].sort((a, b) => (rank[a.type] ?? 10) - (rank[b.type] ?? 10));
 }
