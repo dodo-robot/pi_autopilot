@@ -205,6 +205,7 @@ export class ApplyService {
       case "KEEP":
       case "MARK_STALE":
       case "NEEDS_HUMAN":
+      case "REMOVE_DEPENDENCY":
         return { kind: "skip", entry: skipEntry(patch, "requires-approval") };
     }
   }

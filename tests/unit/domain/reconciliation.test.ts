@@ -122,6 +122,36 @@ describe("BacklogPatchSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a REMOVE_DEPENDENCY patch", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "REMOVE_DEPENDENCY",
+      issue: 15,
+      dependsOn: 12,
+      reason: "dependency was satisfied by a rearchitecting",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a REMOVE_DEPENDENCY patch with an empty reason", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "REMOVE_DEPENDENCY",
+      issue: 15,
+      dependsOn: 12,
+      reason: "",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a REMOVE_DEPENDENCY patch with a non-positive dependsOn", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "REMOVE_DEPENDENCY",
+      issue: 15,
+      dependsOn: 0,
+      reason: "invalid",
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts a MARK_STALE patch", () => {
     const result = BacklogPatchSchema.safeParse({
       type: "MARK_STALE",
