@@ -84,6 +84,17 @@ describe("parseGitHubRemote", () => {
     });
   });
 
+  it("accepts SSH host aliases of github.com", () => {
+    expect(parseGitHubRemote("git@github.com-smityx:Smityx/revalbis.git")).toEqual({
+      owner: "Smityx",
+      repo: "revalbis",
+    });
+    expect(parseGitHubRemote("git@github.com-other:acme/widgets.git")).toEqual({
+      owner: "acme",
+      repo: "widgets",
+    });
+  });
+
   it("rejects non-GitHub remotes", () => {
     expect(parseGitHubRemote("git@gitlab.com:acme/widgets.git")).toBeNull();
     expect(parseGitHubRemote("https://example.com/acme/widgets.git")).toBeNull();

@@ -26,8 +26,11 @@ export function parseGitHubRemote(remote: string): RepositoryRef | null {
   const trimmed = remote.trim();
   if (trimmed.length === 0) return null;
 
+  // Host may be `github.com` optionally followed by an SSH host alias segment
+  // such as `github.com-smityx` (an ~/.ssh/config Host that points at GitHub
+  // with a specific key). Any `-<alias>` suffix is accepted.
   const sshMatch =
-    /^(?:git@|ssh:\/\/git@)github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(
+    /^(?:git@|ssh:\/\/git@)github\.com(?:-[A-Za-z0-9_-]+)?[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(
       trimmed,
     );
   if (sshMatch !== null) {
