@@ -223,6 +223,36 @@ describe("BacklogPatchSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts a MERGE_DUPLICATE patch", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "MERGE_DUPLICATE",
+      keep: 120,
+      duplicate: 123,
+      reason: "both issues describe the same OAuth callback rejection behavior",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a MERGE_DUPLICATE patch with an empty reason", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "MERGE_DUPLICATE",
+      keep: 120,
+      duplicate: 123,
+      reason: "",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a MERGE_DUPLICATE patch with a non-positive issue number", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "MERGE_DUPLICATE",
+      keep: 120,
+      duplicate: 0,
+      reason: "x",
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts a MARK_STALE patch", () => {
     const result = BacklogPatchSchema.safeParse({
       type: "MARK_STALE",
