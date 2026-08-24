@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import { DEFAULT_PI_MODEL, loadRepositoryConfig, resolveRoleModel } from "../config/load-config.js";
-import type { AutopilotConfig, RoleModelEntry } from "../config/schema.js";
+import type { AutopilotConfig, RoleModelEntry, RoleModelOverride } from "../config/schema.js";
 import { GitHubAdapter } from "../github/github-adapter.js";
 import { ProjectsAdapter } from "../github/projects-adapter.js";
 import type { RepositoryContext } from "../github/repository-context.js";
@@ -61,8 +61,12 @@ export function registerBootstrapCommand(
       "--bootstrap-timeout <minutes>",
       "override the bootstrapper session timeout in minutes (default: from bootstrap.timeoutMinutes or 90)",
     )
+    .option(
+      "--bootstrapper-model <model>",
+      "override the bootstrapper model (highest precedence; overrides agents.bootstrapper in .pi/autopilot.yaml)",
+    )
     .option("--json", "emit machine-readable output")
-    .action(async (opts: { plan?: boolean; apply?: string; requirements: string[]; out?: string; bootstrapTimeout?: number; json?: boolean }) => {
+    .action(async (opts: { plan?: boolean; apply?: string; requirements: string[]; out?: string; bootstrapTimeout?: number; bootstrapperModel?: string; json?: boolean }) => {
       const stdout = deps.stdout ?? ((t) => process.stdout.write(`${t}\n`));
       const stderr = deps.stderr ?? ((t) => process.stderr.write(`${t}\n`));
       const setExitCode = deps.setExitCode ?? ((code) => { process.exitCode = code; });
@@ -110,7 +114,7 @@ export function registerBootstrapCommand(
 
 async function runPlan(
   docs: RequirementDoc[],
-  opts: { out?: string; bootstrapTimeout?: number },
+  opts: { out?: string; bootstrapTimeout?: number; bootstrapperModel?: string },
   deps: BootstrapCommandDeps,
 ): Promise<{ planId: string; markdownPath: string }> {
   const runner = deps.processRunner ?? new ProcessRunnerImpl();
@@ -119,9 +123,14 @@ async function runPlan(
   const config = await loadConfigOrDefault(ctx.root);
   const paths = appPaths(deps.dataDir ?? opts.out);
   const artifacts = new ArtifactStore(paths);
+  // CLI --bootstrapper-model overrides everything (highest precedence), matching
+  // how resolveRoleModel treats a CLI override above repo/user config.
+  const cliOverride: RoleModelOverride | null = opts.bootstrapperModel !== undefined
+    ? { model: opts.bootstrapperModel }
+    : null;
   const bootstrapperModel = resolveRoleModel(
     "bootstrapper",
-    null,
+    cliOverride,
     config.agents,
     null,
     deps.piDefaultModel ?? DEFAULT_PI_MODEL,

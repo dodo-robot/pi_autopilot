@@ -147,6 +147,24 @@ describe("bootstrap command registration", () => {
     expect(called).toBe(true);
   });
 
+  it("accepts the --bootstrapper-model flag", async () => {
+    let called = false;
+    const deps: BootstrapCommandDeps = {
+      planFn: async () => {
+        called = true;
+        return { planId: "x", markdownPath: "/tmp/x.md" };
+      },
+      setExitCode: () => {},
+      stdout: () => {},
+    };
+    const program = makeProgram(deps);
+    await program.parseAsync(
+      ["bootstrap", "--plan", "--bootstrapper-model", "deepseek/deepseek-v4-flash"],
+      { from: "user" },
+    );
+    expect(called).toBe(true);
+  });
+
   it("defaults to bootstrap.timeoutMinutes config in the schema", async () => {
     const { AutopilotConfigSchema } = await import("../../../src/config/schema.js");
     const cfg = AutopilotConfigSchema.parse({
