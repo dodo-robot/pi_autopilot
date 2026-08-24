@@ -6,6 +6,7 @@ import {
   renderDependencyPreview,
   renderRemoveDependencyPreview,
   renderCreatePreview,
+  renderSplitPreview,
 } from "../../../src/reconciliation/apply-preview.js";
 
 describe("confirmMenu", () => {
@@ -168,6 +169,39 @@ describe("confirmMenu", () => {
       } as any;
       const result = renderCreatePreview(patch);
       expect(result).toBe("title: Test Issue\n(no goal)");
+    });
+  });
+
+  describe("renderSplitPreview", () => {
+    it("renders the parent issue and every child title with its goal", () => {
+      const patch = {
+        type: "SPLIT_ISSUE",
+        issue: 123,
+        reason: "spans two outcomes",
+        children: [
+          { title: "Reject revoked sessions", enrichment: { goal: "Revoked sessions are rejected" } },
+          { title: "Rate-limit failed logins", enrichment: { goal: "Failed logins are throttled" } },
+        ],
+      } as any;
+      const result = renderSplitPreview(patch);
+      expect(result).toContain("split #123 into 2 issues:");
+      expect(result).toContain("- Reject revoked sessions: Revoked sessions are rejected");
+      expect(result).toContain("- Rate-limit failed logins: Failed logins are throttled");
+    });
+
+    it("shows '(no goal)' for a child with an empty goal", () => {
+      const patch = {
+        type: "SPLIT_ISSUE",
+        issue: 123,
+        reason: "spans two outcomes",
+        children: [
+          { title: "Child A", enrichment: { goal: "" } },
+          { title: "Child B", enrichment: { goal: "Has a goal" } },
+        ],
+      } as any;
+      const result = renderSplitPreview(patch);
+      expect(result).toContain("- Child A: (no goal)");
+      expect(result).toContain("- Child B: Has a goal");
     });
   });
 });

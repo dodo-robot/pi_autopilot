@@ -34,6 +34,19 @@ export function renderCreatePreview(
   return `title: ${patch.spec.title}\n${goal === "" ? "(no goal)" : goal}`;
 }
 
+/** Render a compact human summary for a SPLIT_ISSUE: the parent issue and
+ * every child's title + goal. */
+export function renderSplitPreview(
+  patch: Extract<ReconciledPatch, { type: "SPLIT_ISSUE" }>,
+): string {
+  const lines = [`split #${patch.issue} into ${patch.children.length} issues:`];
+  for (const child of patch.children) {
+    const goal = child.enrichment.goal.trim();
+    lines.push(`- ${child.title}: ${goal === "" ? "(no goal)" : goal}`);
+  }
+  return lines.join("\n");
+}
+
 /**
  * Prompt for one of apply / skip / all / abort. Injected write/read for
  * tests; default reads/writes from process stdio. Blank input always
