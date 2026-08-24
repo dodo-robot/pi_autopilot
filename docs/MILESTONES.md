@@ -161,10 +161,23 @@ priority; pick from the top.
   prompt or patch policy.
 - **Apply-all workflow.** Interactive per-patch `all` exists inside one run,
   but there is no broader apply-all command/workflow for a report set.
-- **Remaining patch types:** `SPLIT_ISSUE`, `MERGE_DUPLICATE`,
-  `REMOVE_DEPENDENCY`, `MARK_READY` — documented in
-  `src/domain/reconciliation.ts` as a future extension of the
-  `BacklogPatch` union. (extend_requirements.md §"Structured patch model")
+- **Remaining patch types:** `SPLIT_ISSUE`, `MERGE_DUPLICATE` —
+  documented in `src/domain/reconciliation.ts` as a future extension of
+  the `BacklogPatch` union. (extend_requirements.md §"Structured patch model")
+  `REMOVE_DEPENDENCY` is implemented (schema, policy, idempotency, prompt)
+  but report-only — see the next bullet. `MARK_READY` is deliberately
+  excluded; see `docs/superpowers/specs/2026-08-24-reconciliation-remove-dependency-design.md` §6.
+- **`REMOVE_DEPENDENCY` → `ApplyService` wiring.** `ApplyService.apply()`
+  unconditionally skips every `requires-approval` patch before `prepare()`
+  runs, so `REMOVE_DEPENDENCY` (always `requires-approval`) cannot yet be
+  applied through `reconcile-apply` even though its body-edit primitive
+  (`removeManagedDependencyFromBody`) and preview renderer
+  (`renderRemoveDependencyPreview`) already exist and are tested. Fixing
+  requires first deciding how `ApplyService` should distinguish
+  "requires-approval but still offerable via interactive confirmation"
+  (`REMOVE_DEPENDENCY`) from "requires-approval and never offered"
+  (`MARK_STALE`, `NEEDS_HUMAN`) — a cross-cutting change to code every
+  patch type depends on.
 - **Label policy on `CREATE_ISSUE`.** Created issues currently use the
   minimal shipped label behavior; final label taxonomy is still deferred.
 - **Concurrent application.** Apply-safe runs patches sequentially; concurrent
