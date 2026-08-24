@@ -17,6 +17,14 @@ export function renderDependencyPreview(
   return `${renderDependencyLine(dependsOn)}`;
 }
 
+/** Render the one dependency line a REMOVE_DEPENDENCY will delete. */
+export function renderRemoveDependencyPreview(
+  currentBody: string,
+  dependsOn: number,
+): string {
+  return `remove: ${renderDependencyLine(dependsOn)}`;
+}
+
 /** Render a compact human summary for a CREATE_ISSUE. */
 export function renderCreatePreview(
   patch: Extract<ReconciledPatch, { type: "CREATE_ISSUE" }>,

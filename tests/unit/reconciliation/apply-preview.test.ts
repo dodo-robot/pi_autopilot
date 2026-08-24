@@ -4,6 +4,7 @@ import {
   confirmMenu,
   renderEnrichPreview,
   renderDependencyPreview,
+  renderRemoveDependencyPreview,
   renderCreatePreview,
 } from "../../../src/reconciliation/apply-preview.js";
 
@@ -134,6 +135,13 @@ describe("confirmMenu", () => {
     it("accepts currentBody parameter without using it (interface compliance)", () => {
       const result = renderDependencyPreview("some current body text", 100);
       expect(result).toBe(`- #100 (unsatisfied)`);
+    });
+  });
+
+  describe("renderRemoveDependencyPreview", () => {
+    it("returns the dependency line being removed", () => {
+      const result = renderRemoveDependencyPreview("some current body", 42);
+      expect(result).toBe("remove: - #42 (unsatisfied)");
     });
   });
 
