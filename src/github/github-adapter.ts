@@ -68,6 +68,7 @@ export interface GitHubPort {
   listLabels(number: number): Promise<string[]>;
   addLabel(number: number, name: string): Promise<void>;
   removeLabel(number: number, name: string): Promise<void>;
+  closeIssue(number: number): Promise<void>;
 }
 
 /** Minimal structural surface of Octokit used by the adapter. */
@@ -106,7 +107,8 @@ export interface OctokitLike {
         owner: string;
         repo: string;
         issue_number: number;
-        body: string;
+        body?: string | null;
+        state?: "open" | "closed";
       }): Promise<{ data: OctokitIssueData }>;
       listForRepo(params: {
         owner: string;
@@ -311,6 +313,25 @@ export class GitHubAdapter implements GitHubPort {
       return mapIssue(data);
     } catch (error) {
       throw new GitHubError(`failed to update issue #${number}`, {
+        cause: error,
+      });
+    }
+  }
+
+  /**
+   * Closes an issue by state. Only uses the update endpoint to avoid side effects
+   * from other issue fields.
+   */
+  async closeIssue(number: number): Promise<void> {
+    try {
+      await this.octokit.rest.issues.update({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: number,
+        state: "closed",
+      });
+    } catch (error) {
+      throw new GitHubError(`failed to close issue #${number}`, {
         cause: error,
       });
     }

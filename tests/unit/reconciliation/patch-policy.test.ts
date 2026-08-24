@@ -72,6 +72,15 @@ const cases: Array<{ patch: BacklogPatch; policy: "auto-safe" | "requires-approv
     },
     policy: "requires-approval",
   },
+  {
+    patch: {
+      type: "MERGE_DUPLICATE",
+      keep: 120,
+      duplicate: 123,
+      reason: "same behavioral outcome",
+    },
+    policy: "requires-approval",
+  },
 ];
 
 describe("classifyPatch", () => {

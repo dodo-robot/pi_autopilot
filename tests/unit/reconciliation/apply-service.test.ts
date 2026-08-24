@@ -101,8 +101,20 @@ class FakeGitHub implements GitHubPort {
     return issue;
   }
 
-  async createIssueComment(): Promise<void> {
-    throw new Error("not called");
+  readonly comments: Array<{ number: number; body: string }> = [];
+
+  async createIssueComment(number: number, body: string): Promise<void> {
+    this.comments.push({ number, body });
+  }
+
+  readonly closed: number[] = [];
+
+  async closeIssue(number: number): Promise<void> {
+    this.closed.push(number);
+    const issue = this.issues.get(number);
+    if (issue !== undefined) {
+      this.issues.set(number, { ...issue, state: "closed" });
+    }
   }
 
   async findPullRequestByHead(): Promise<PullRequestRef | null> {
@@ -921,6 +933,152 @@ describe("ApplyService.apply", () => {
     expect(github.created.map((c) => c.title)).toEqual(["Child A"]);
     const parentBody = github.issues.get(20)?.body ?? "";
     expect(parentBody).not.toContain("## Split into");
+  });
+
+  it("offers MERGE_DUPLICATE interactively, comments on and closes the duplicate, and never mutates the kept issue", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(120, makeIssue(120, "OAuth callback", "Handles OAuth"));
+    github.issues.set(123, makeIssue(123, "OAuth callback (dup)", "Also handles OAuth"));
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "MERGE_DUPLICATE",
+          keep: 120,
+          duplicate: 123,
+          reason: "same behavioral outcome",
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service({ confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
+
+    expect(github.comments).toEqual([{ number: 123, body: "Duplicate of #120." }]);
+    expect(github.closed).toEqual([123]);
+    expect(github.updated).toHaveLength(0);
+    expect(result.entries[0]?.outcome).toEqual({ status: "applied" });
+    expect(result.entries[0]?.appliedIssueNumber).toBe(123);
+  });
+
+  it("never auto-applies MERGE_DUPLICATE under --yes, recording it as requires-approval", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(120, makeIssue(120, "OAuth callback", "Handles OAuth"));
+    github.issues.set(123, makeIssue(123, "OAuth callback (dup)", "Also handles OAuth"));
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "MERGE_DUPLICATE",
+          keep: 120,
+          duplicate: 123,
+          reason: "same behavioral outcome",
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service().apply(analysisId, { yes: true });
+
+    expect(github.closed).toHaveLength(0);
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "requires-approval" });
+  });
+
+  it("skips MERGE_DUPLICATE idempotently when the duplicate is already closed", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(120, makeIssue(120, "OAuth callback", "Handles OAuth"));
+    const closedDup = makeIssue(123, "OAuth callback (dup)", "Also handles OAuth");
+    github.issues.set(123, { ...closedDup, state: "closed" });
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "MERGE_DUPLICATE",
+          keep: 120,
+          duplicate: 123,
+          reason: "same behavioral outcome",
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service({ confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
+
+    expect(github.comments).toHaveLength(0);
+    expect(github.closed).toHaveLength(0);
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "idempotent" });
+  });
+
+  it("previews MERGE_DUPLICATE without mutation when previewOnly is set", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(120, makeIssue(120, "OAuth callback", "Handles OAuth"));
+    github.issues.set(123, makeIssue(123, "OAuth callback (dup)", "Also handles OAuth"));
+    const previews: string[] = [];
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "MERGE_DUPLICATE",
+          keep: 120,
+          duplicate: 123,
+          reason: "same behavioral outcome",
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service({ onPreview: (text) => previews.push(text) }).apply(analysisId, {
+      yes: true,
+      previewOnly: true,
+    });
+
+    expect(result.summary.previewed).toBe(1);
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "preview-only" });
+    expect(previews[0]).toContain("keep #120");
+    expect(previews[0]).toContain("close #123");
+    expect(github.comments).toHaveLength(0);
+    expect(github.closed).toHaveLength(0);
+  });
+
+  it("fails MERGE_DUPLICATE cleanly when closeIssue throws after the comment succeeds", async () => {
+    class FakeGitHubFailingClose extends FakeGitHub {
+      override async closeIssue(): Promise<void> {
+        throw new Error("github 500");
+      }
+    }
+    const failingGithub = new FakeGitHubFailingClose();
+    github = failingGithub;
+    github.issues.set(12, epic());
+    github.issues.set(120, makeIssue(120, "OAuth callback", "Handles OAuth"));
+    github.issues.set(123, makeIssue(123, "OAuth callback (dup)", "Also handles OAuth"));
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "MERGE_DUPLICATE",
+          keep: 120,
+          duplicate: 123,
+          reason: "same behavioral outcome",
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service({ github, confirmMenu: async () => "apply" }).apply(analysisId, { yes: false });
+
+    expect(github.comments).toEqual([{ number: 123, body: "Duplicate of #120." }]);
+    expect(result.entries[0]?.outcome.status).toBe("failed");
+    expect(result.entries[0]?.appliedIssueNumber).toBeUndefined();
   });
 
   it("enforces the report staleness guard unless force is set", async () => {

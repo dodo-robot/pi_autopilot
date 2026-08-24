@@ -196,6 +196,10 @@ export class FakeGitHubServer implements GitHubPort {
     this.issueComments.push({ id: this.nextCommentId++, body });
   }
 
+  async closeIssue(_number: number): Promise<void> {
+    this.issue = { ...this.issue, state: "closed" };
+  }
+
   async findPullRequestByHead(head: string): Promise<PullRequestRef | null> {
     return this.pullRequests.find((pr) => pr.head === head) ?? null;
   }

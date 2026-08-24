@@ -225,6 +225,25 @@ describe("GitHubAdapter", () => {
     });
   });
 
+  it("closes an issue", async () => {
+    const { octokit } = makeOctokit();
+    const { github } = await makeAdapter(octokit);
+    await github.closeIssue(42);
+    expect(octokit.rest.issues.update).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "widgets",
+      issue_number: 42,
+      state: "closed",
+    });
+  });
+
+  it("wraps a failure to close an issue in GitHubError", async () => {
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.update.mockRejectedValueOnce(new Error("boom"));
+    const { github } = await makeAdapter(octokit);
+    await expect(github.closeIssue(42)).rejects.toThrow("failed to close issue #42");
+  });
+
   it("creates an issue comment", async () => {
     const { octokit } = makeOctokit();
     const { github } = await makeAdapter(octokit);

@@ -14,6 +14,7 @@ import {
   renderCreatePreview,
   renderDependencyPreview,
   renderEnrichPreview,
+  renderMergeDuplicatePreview,
   renderRemoveDependencyPreview,
   renderSplitPreview,
   type MenuAnswer,
@@ -38,6 +39,7 @@ const DEFAULT_STALE_HOURS = 168;
 const OFFERABLE_REQUIRES_APPROVAL: ReadonlySet<BacklogPatchType> = new Set([
   "REMOVE_DEPENDENCY",
   "SPLIT_ISSUE",
+  "MERGE_DUPLICATE",
 ]);
 
 export interface ApplyOptions {
@@ -230,6 +232,8 @@ export class ApplyService {
         return this.prepareRemoveDependency(patch);
       case "SPLIT_ISSUE":
         return this.prepareSplit(patch, epicRef);
+      case "MERGE_DUPLICATE":
+        return this.prepareMergeDuplicate(patch);
       case "KEEP":
       case "MARK_STALE":
       case "NEEDS_HUMAN":
@@ -409,6 +413,53 @@ export class ApplyService {
       ...entryBase(patch, `split #${patch.issue} into ${childRefs.length} issues`),
       outcome: { status: "applied" },
       appliedIssueNumbers: childRefs.map((ref) => ref.number),
+    };
+  }
+
+  private async prepareMergeDuplicate(
+    patch: Extract<ReconciledPatch, { type: "MERGE_DUPLICATE" }>,
+  ): Promise<Prepared> {
+    let current: GitHubIssue;
+    try {
+      current = await this.deps.github.getIssue(patch.duplicate);
+    } catch (error) {
+      return {
+        kind: "skip",
+        entry: skipEntry(patch, "failed-to-fetch", error instanceof Error ? error.message : String(error)),
+      };
+    }
+
+    if (current.state === "closed") {
+      return {
+        kind: "skip",
+        entry: skipEntry(patch, "idempotent", `already closed as a duplicate of #${patch.keep}`),
+      };
+    }
+
+    return {
+      kind: "write",
+      patch,
+      entryBase: entryBase(patch, `close #${patch.duplicate} as a duplicate of #${patch.keep}`),
+      previewText: renderMergeDuplicatePreview(patch),
+      applyFresh: () => this.applyMergeDuplicateFresh(patch),
+    };
+  }
+
+  private async applyMergeDuplicateFresh(
+    patch: Extract<ReconciledPatch, { type: "MERGE_DUPLICATE" }>,
+  ): Promise<ApplyEntry> {
+    const current = await this.deps.github.getIssue(patch.duplicate);
+    if (current.state === "closed") {
+      return skipEntry(patch, "idempotent", `already closed as a duplicate of #${patch.keep}`);
+    }
+
+    await this.deps.github.createIssueComment(patch.duplicate, `Duplicate of #${patch.keep}.`);
+    await this.deps.github.closeIssue(patch.duplicate);
+
+    return {
+      ...entryBase(patch, `closed #${patch.duplicate} as a duplicate of #${patch.keep}`),
+      outcome: { status: "applied" },
+      appliedIssueNumber: patch.duplicate,
     };
   }
 
@@ -597,6 +648,7 @@ function sortPatches(patches: ReconciledPatch[]): ReconciledPatch[] {
     ADD_DEPENDENCY: 2,
     REMOVE_DEPENDENCY: 3,
     SPLIT_ISSUE: 4,
+    MERGE_DUPLICATE: 5,
   };
   return [...patches].sort((a, b) => (rank[a.type] ?? 10) - (rank[b.type] ?? 10));
 }

@@ -84,6 +84,11 @@ class FakeGitHub implements GitHubPort {
     throw new Error("must not be called");
   }
 
+  async closeIssue(): Promise<void> {
+    this.mutationCalls.push("closeIssue");
+    throw new Error("must not be called");
+  }
+
   async findPullRequestByHead(): Promise<null> {
     return null;
   }

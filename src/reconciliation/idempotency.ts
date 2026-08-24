@@ -12,6 +12,7 @@ interface IssueLike {
   number: number;
   title: string;
   body: string;
+  state: string;
 }
 
 function existingDependencyNumbers(body: string): Set<number> {
@@ -120,6 +121,18 @@ export function applyIdempotencyDowngrades(
           type: "KEEP",
           issue: patch.issue,
           reason: "already split into the proposed children",
+        };
+      }
+      return patch;
+    }
+
+    if (patch.type === "MERGE_DUPLICATE") {
+      const duplicateIssue = byNumber.get(patch.duplicate);
+      if (duplicateIssue !== undefined && duplicateIssue.state === "closed") {
+        return {
+          type: "KEEP",
+          issue: patch.duplicate,
+          reason: `already closed as a duplicate of #${patch.keep}`,
         };
       }
       return patch;

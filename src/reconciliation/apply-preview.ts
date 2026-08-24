@@ -47,6 +47,14 @@ export function renderSplitPreview(
   return lines.join("\n");
 }
 
+/** Render a compact human summary for a MERGE_DUPLICATE: which issue is
+ * kept and which one will be commented on and closed. */
+export function renderMergeDuplicatePreview(
+  patch: Extract<ReconciledPatch, { type: "MERGE_DUPLICATE" }>,
+): string {
+  return `keep #${patch.keep}; close #${patch.duplicate} as a duplicate`;
+}
+
 /**
  * Prompt for one of apply / skip / all / abort. Injected write/read for
  * tests; default reads/writes from process stdio. Blank input always

@@ -148,6 +148,12 @@ class RecordingGitHub implements GitHubPort {
     this.writes.push("createIssueComment");
   }
 
+  async closeIssue(number: number): Promise<void> {
+    const existing = await this.getIssue(number);
+    this.issues.set(number, { ...existing, state: "closed" });
+    this.writes.push(`closeIssue:#${number}`);
+  }
+
   async findPullRequestByHead(): Promise<null> {
     return null;
   }

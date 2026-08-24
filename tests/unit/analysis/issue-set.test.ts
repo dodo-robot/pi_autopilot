@@ -48,6 +48,7 @@ class FakeGitHub implements GitHubPort {
 
   async updateIssueBody(): Promise<GitHubIssue> { throw new Error("must not be called"); }
   async createIssueComment(): Promise<void> { throw new Error("must not be called"); }
+  async closeIssue(): Promise<void> { throw new Error("must not be called"); }
   async findPullRequestByHead(): Promise<null> { return null; }
   async createPullRequest(): Promise<never> { throw new Error("must not be called"); }
   async findIssueCommentByMarker(): Promise<null> { return null; }

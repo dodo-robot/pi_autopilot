@@ -26,7 +26,7 @@ describe("applyIdempotencyDowngrades", () => {
       { type: "ENRICH_ISSUE", issue: 16, reason: "add contract", patch: enrichment() },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 16, title: "Create user from GitHub identity", body: already },
+      { number: 16, title: "Create user from GitHub identity", body: already, state: "open" },
     ]);
     expect(result).toMatchObject({ type: "KEEP", issue: 16 });
   });
@@ -36,7 +36,7 @@ describe("applyIdempotencyDowngrades", () => {
       { type: "ENRICH_ISSUE", issue: 16, reason: "add contract", patch: enrichment() },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 16, title: "Create user from GitHub identity", body: "Original body, no section yet" },
+      { number: 16, title: "Create user from GitHub identity", body: "Original body, no section yet", state: "open" },
     ]);
     expect(result.type).toBe("ENRICH_ISSUE");
   });
@@ -46,7 +46,7 @@ describe("applyIdempotencyDowngrades", () => {
       { type: "ADD_DEPENDENCY", issue: 17, dependsOn: 15, reason: "ordering" },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 17, title: "Validate sessions", body: "depends on: #15\n" },
+      { number: 17, title: "Validate sessions", body: "depends on: #15\n", state: "open" },
     ]);
     expect(result).toMatchObject({ type: "KEEP", issue: 17 });
   });
@@ -56,7 +56,7 @@ describe("applyIdempotencyDowngrades", () => {
       { type: "ADD_DEPENDENCY", issue: 17, dependsOn: 15, reason: "ordering" },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 17, title: "Validate sessions", body: "no dependency markers here" },
+      { number: 17, title: "Validate sessions", body: "no dependency markers here", state: "open" },
     ]);
     expect(result.type).toBe("ADD_DEPENDENCY");
   });
@@ -66,7 +66,7 @@ describe("applyIdempotencyDowngrades", () => {
       { type: "REMOVE_DEPENDENCY", issue: 17, dependsOn: 15, reason: "no longer needed" },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 17, title: "Validate sessions", body: "no dependency markers here" },
+      { number: 17, title: "Validate sessions", body: "no dependency markers here", state: "open" },
     ]);
     expect(result).toMatchObject({ type: "KEEP", issue: 17 });
   });
@@ -76,7 +76,7 @@ describe("applyIdempotencyDowngrades", () => {
       { type: "REMOVE_DEPENDENCY", issue: 17, dependsOn: 15, reason: "no longer needed" },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 17, title: "Validate sessions", body: "Depends on:\n- #15 (unsatisfied)" },
+      { number: 17, title: "Validate sessions", body: "Depends on:\n- #15 (unsatisfied)", state: "open" },
     ]);
     expect(result.type).toBe("REMOVE_DEPENDENCY");
   });
@@ -86,7 +86,7 @@ describe("applyIdempotencyDowngrades", () => {
       { type: "REMOVE_DEPENDENCY", issue: 17, dependsOn: 15, reason: "no longer needed" },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 17, title: "Validate sessions", body: "depends on: #15\n" },
+      { number: 17, title: "Validate sessions", body: "depends on: #15\n", state: "open" },
     ]);
     expect(result).toMatchObject({ type: "KEEP", issue: 17 });
   });
@@ -112,6 +112,7 @@ describe("applyIdempotencyDowngrades", () => {
           "- [ ] #124 Reject revoked sessions during authentication\n" +
           "- [ ] #125 Rate-limit failed logins\n" +
           "<!-- autopilot-split:end -->",
+        state: "open",
       },
     ]);
     expect(result).toMatchObject({ type: "KEEP", issue: 20 });
@@ -137,6 +138,7 @@ describe("applyIdempotencyDowngrades", () => {
           "<!-- autopilot-split:start -->\n## Split into\n\n" +
           "- [ ] #124 Reject revoked sessions during authentication\n" +
           "<!-- autopilot-split:end -->",
+        state: "open",
       },
     ]);
     expect(result.type).toBe("SPLIT_ISSUE");
@@ -155,7 +157,7 @@ describe("applyIdempotencyDowngrades", () => {
       },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 20, title: "Auth hardening", body: "Original body, no section yet" },
+      { number: 20, title: "Auth hardening", body: "Original body, no section yet", state: "open" },
     ]);
     expect(result.type).toBe("SPLIT_ISSUE");
   });
@@ -170,7 +172,7 @@ describe("applyIdempotencyDowngrades", () => {
       },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 30, title: "Admin session revocation endpoint", body: "already exists" },
+      { number: 30, title: "Admin session revocation endpoint", body: "already exists", state: "open" },
     ]);
     expect(result).toMatchObject({ type: "KEEP", issue: 30 });
   });
@@ -185,7 +187,7 @@ describe("applyIdempotencyDowngrades", () => {
       },
     ];
     const [result] = applyIdempotencyDowngrades(patches, [
-      { number: 30, title: "Something unrelated", body: "" },
+      { number: 30, title: "Something unrelated", body: "", state: "open" },
     ]);
     expect(result.type).toBe("CREATE_ISSUE");
   });
@@ -197,7 +199,7 @@ describe("applyIdempotencyDowngrades", () => {
     ];
 
     const result = applyIdempotencyDowngrades(patches, [
-      { number: 16, title: "Create user from GitHub identity", body: ambiguousBody },
+      { number: 16, title: "Create user from GitHub identity", body: ambiguousBody, state: "open" },
     ]);
 
     expect(result).toEqual([
@@ -223,5 +225,56 @@ describe("applyIdempotencyDowngrades", () => {
     ];
     const result = applyIdempotencyDowngrades(patches, []);
     expect(result).toEqual(patches);
+  });
+
+  it("downgrades a MERGE_DUPLICATE patch to KEEP when the duplicate issue is already closed", () => {
+    const patches: BacklogPatch[] = [
+      {
+        type: "MERGE_DUPLICATE",
+        keep: 120,
+        duplicate: 123,
+        reason: "same behavioral outcome",
+      },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      { number: 120, title: "OAuth callback", body: "", state: "open" },
+      { number: 123, title: "OAuth callback (dup)", body: "", state: "closed" },
+    ]);
+    expect(result).toEqual({
+      type: "KEEP",
+      issue: 123,
+      reason: "already closed as a duplicate of #120",
+    });
+  });
+
+  it("leaves a MERGE_DUPLICATE patch unchanged when the duplicate issue is still open", () => {
+    const patches: BacklogPatch[] = [
+      {
+        type: "MERGE_DUPLICATE",
+        keep: 120,
+        duplicate: 123,
+        reason: "same behavioral outcome",
+      },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      { number: 120, title: "OAuth callback", body: "", state: "open" },
+      { number: 123, title: "OAuth callback (dup)", body: "", state: "open" },
+    ]);
+    expect(result).toEqual(patches[0]);
+  });
+
+  it("leaves a MERGE_DUPLICATE patch unchanged when the duplicate issue is not in the provided issue list", () => {
+    const patches: BacklogPatch[] = [
+      {
+        type: "MERGE_DUPLICATE",
+        keep: 120,
+        duplicate: 999,
+        reason: "same behavioral outcome",
+      },
+    ];
+    const [result] = applyIdempotencyDowngrades(patches, [
+      { number: 120, title: "OAuth callback", body: "", state: "open" },
+    ]);
+    expect(result).toEqual(patches[0]);
   });
 });

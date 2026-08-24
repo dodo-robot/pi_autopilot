@@ -77,6 +77,7 @@ When your analysis is complete, call the submit_result tool exactly once with a 
     { "type": "ADD_DEPENDENCY", "issue": 123, "dependsOn": 120, "reason": "..." },
     { "type": "REMOVE_DEPENDENCY", "issue": 123, "dependsOn": 120, "reason": "..." },
     { "type": "SPLIT_ISSUE", "issue": 123, "reason": "...", "children": [ { "title": "...", "enrichment": { "goal": "...", "sourceRequirements": [], "acceptanceCriteria": [], "constraints": [], "nonGoals": [], "validation": [], "relevantAreas": [] } } ] },
+    { "type": "MERGE_DUPLICATE", "keep": 120, "duplicate": 123, "reason": "..." },
     { "type": "MARK_STALE", "issue": 123, "reason": "..." },
     { "type": "NEEDS_HUMAN", "issue": 123, "ambiguityType": "ENGINEERING" | "PRODUCT" | "MISSING_CONTEXT" | "CONFLICTING_REQUIREMENTS", "reason": "...", "questions": ["..."] }
   ]
@@ -89,6 +90,7 @@ Rules
 - Propose CREATE_ISSUE only for a requirement with no corresponding issue anywhere in the epic.
 - Propose ADD_DEPENDENCY when one issue's work genuinely cannot start before another completes and no dependency is currently recorded.
 - Propose REMOVE_DEPENDENCY only when a currently-recorded managed-form dependency (the "- #N (unsatisfied)" bullet, not free-text prose like "depends on #12") no longer reflects a real ordering constraint — for example, the dependency was satisfied by a rearchitecting that removed the need for it, or was recorded in error. Never propose it against a dependency you only see written as free-text human prose.
+- Propose MERGE_DUPLICATE when two issues in this epic describe the same actual piece of work — not merely similar titles or overlapping keywords, but the same behavioral outcome such that implementing one would fully satisfy the other. Set "keep" to whichever issue has more complete or enriched content (fuller acceptance criteria, more validated context); if the two are equally complete, "keep" is the lower-numbered issue. Set "duplicate" to the other. Never propose MERGE_DUPLICATE for issues that merely depend on or relate to each other — only true duplicates.
 - ENGINEERING ambiguity (which module owns a behavior, whether an abstraction already exists) does NOT require NEEDS_HUMAN: resolve it by inspecting the repository.
 - PRODUCT ambiguity, MISSING_CONTEXT (a requirement you cannot locate enough information about), and CONFLICTING_REQUIREMENTS (two requirement documents disagree) MUST produce a NEEDS_HUMAN patch with specific questions.
 - An issue is the right size when it has one primary outcome, fits one isolated agent session, and its acceptance criteria are independently testable. If an issue's scope spans multiple independent behavioral outcomes (not just multiple implementation steps toward one outcome), it is oversized. When the split itself is mechanical — the outcomes are clear and their relative order/priority is not a product call — propose SPLIT_ISSUE with one full IssueSpec (title + complete enrichment) per outcome. When which slice ships first, or how to divide the scope, requires a product decision, raise a NEEDS_HUMAN patch (ambiguityType "PRODUCT") naming the outcomes instead of proposing a split yourself.

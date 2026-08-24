@@ -143,6 +143,19 @@ while `MARK_STALE`/`NEEDS_HUMAN` remain hard-skipped.
 
 ---
 
+## 2026-08-24 — MERGE_DUPLICATE reconciliation patch ✅
+
+**Scope:** Final patch type in the "Structured patch model" backlog item — the reconciler can now propose closing a duplicate issue in favor of a survivor.
+
+- `MERGE_DUPLICATE` schema variant, patch policy (`requires-approval`, `OFFERABLE_REQUIRES_APPROVAL`), idempotency downgrade (closed-state check), prompt rule + example, preview renderer, and full `ApplyService` wiring (comment + close via the new `GitHubPort.closeIssue` primitive).
+- Rewriting the duplicate's existing dependents and its epic checklist line are explicitly out of scope, deferred to a human or future reconciliation pass — matching `SPLIT_ISSUE`'s precedent.
+- This closes the "Structured patch model" backlog item in full. `MARK_READY` remains permanently excluded (see the 2026-08-24 `REMOVE_DEPENDENCY` design spec §6).
+
+Design spec: `docs/superpowers/specs/2026-08-24-merge-duplicate-design.md`
+Implementation plan: `docs/superpowers/plans/2026-08-24-merge-duplicate.md`
+
+---
+
 ## 2026-08-24 — `SPLIT_ISSUE` reconciliation patch ✅
 
 **Scope:** The reconciler can propose breaking an oversized issue into
@@ -227,13 +240,6 @@ priority; pick from the top.
   prompt or patch policy.
 - **Apply-all workflow.** Interactive per-patch `all` exists inside one run,
   but there is no broader apply-all command/workflow for a report set.
-- **Remaining patch type:** `MERGE_DUPLICATE` — documented in
-  `src/domain/reconciliation.ts` as a future extension of the
-  `BacklogPatch` union. (extend_requirements.md §"Structured patch model")
-  `REMOVE_DEPENDENCY` and `SPLIT_ISSUE` are both fully implemented,
-  including `ApplyService` wiring (see the 2026-08-24 milestone entries).
-  `MARK_READY` is deliberately excluded; see
-  `docs/superpowers/specs/2026-08-24-reconciliation-remove-dependency-design.md` §6.
 - **Label policy on `CREATE_ISSUE`.** Created issues currently use the
   minimal shipped label behavior; final label taxonomy is still deferred.
 - **Concurrent application.** Apply-safe runs patches sequentially; concurrent

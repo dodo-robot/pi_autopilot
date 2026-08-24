@@ -62,6 +62,7 @@ const PATCH_ORDER = [
   "ADD_DEPENDENCY",
   "REMOVE_DEPENDENCY",
   "SPLIT_ISSUE",
+  "MERGE_DUPLICATE",
   "MARK_STALE",
   "NEEDS_HUMAN",
 ] as const;
@@ -254,7 +255,9 @@ function printHumanReport(
   const issuesWithMoreSpecificPatch = new Set(
     report.patches
       .filter((p) => p.type !== "KEEP" && p.type !== "CREATE_ISSUE")
-      .map((p) => p.issue)
+      .map((p): number | null =>
+        "issue" in p ? p.issue : p.type === "MERGE_DUPLICATE" ? p.duplicate : null,
+      )
       .filter((issue): issue is number => issue !== null),
   );
 
@@ -299,6 +302,8 @@ function describePatch(patch: ReconciliationReport["patches"][number]): string {
       return `#${patch.issue} no longer depends on #${patch.dependsOn} — ${patch.reason}`;
     case "SPLIT_ISSUE":
       return `#${patch.issue} split into ${patch.children.length} issues — ${patch.reason}`;
+    case "MERGE_DUPLICATE":
+      return `#${patch.duplicate} duplicates #${patch.keep} — ${patch.reason}`;
     case "NEEDS_HUMAN":
       return `${patch.issue !== null ? `#${patch.issue} — ` : ""}${patch.reason}`;
   }

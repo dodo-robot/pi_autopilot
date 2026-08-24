@@ -145,11 +145,12 @@ export class ReconciliationService {
       ],
     }));
 
-    const issueLikes: Array<{ number: number; title: string; body: string }> =
+    const issueLikes: Array<{ number: number; title: string; body: string; state: string }> =
       issues.map((issue: GitHubIssue) => ({
         number: issue.number,
         title: issue.title,
         body: issue.body,
+        state: issue.state,
       }));
 
     const downgraded = applyIdempotencyDowngrades(
