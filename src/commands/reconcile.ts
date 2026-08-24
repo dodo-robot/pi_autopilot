@@ -54,12 +54,14 @@ interface ReconcileOptions {
 }
 
 const DEFAULT_REQUIREMENTS_FILE = "requirements.md";
+// Keep in sync with BacklogPatchType in ../domain/reconciliation.ts
 const PATCH_ORDER = [
   "KEEP",
   "ENRICH_ISSUE",
   "CREATE_ISSUE",
   "ADD_DEPENDENCY",
   "REMOVE_DEPENDENCY",
+  "SPLIT_ISSUE",
   "MARK_STALE",
   "NEEDS_HUMAN",
 ] as const;

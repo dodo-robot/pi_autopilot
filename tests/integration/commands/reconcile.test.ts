@@ -321,6 +321,59 @@ describe("autopilot reconcile", () => {
     expect(output).toContain("#15 no longer depends on #20 — no longer needed");
   });
 
+  it("includes SPLIT_ISSUE patches in the human-readable report", async () => {
+    const report: ReconciliationReport = {
+      ...FIXED_REPORT,
+      patches: [
+        {
+          type: "SPLIT_ISSUE",
+          issue: 15,
+          children: [
+            {
+              title: "OAuth callback - authentication",
+              enrichment: {
+                goal: "Handle OAuth callback for GitHub auth",
+                sourceRequirements: ["REQ-AUTH-001"],
+                acceptanceCriteria: ["Exchange code for token", "Create session"],
+                constraints: ["Must validate CSRF state"],
+                nonGoals: ["Token refresh"],
+                validation: ["Test with GitHub sandbox"],
+                relevantAreas: ["auth"],
+              },
+            },
+            {
+              title: "OAuth callback - error handling",
+              enrichment: {
+                goal: "Handle OAuth callback errors gracefully",
+                sourceRequirements: ["REQ-AUTH-001"],
+                acceptanceCriteria: ["Display user-friendly error message"],
+                constraints: ["Log to audit trail"],
+                nonGoals: ["Retry logic"],
+                validation: ["Test network failure"],
+                relevantAreas: ["auth", "logging"],
+              },
+            },
+          ],
+          reason: "split into auth and error handling concerns",
+          policy: "requires-approval",
+        },
+      ],
+    };
+    const lines: string[] = [];
+    const deps = baseDeps({
+      stdout: (line) => lines.push(line),
+      createReconciliation: () => ({ reconcile: async () => report }),
+    });
+    const program = buildProgram(deps);
+    await program.parseAsync(["node", "autopilot", "reconcile", "12"]);
+
+    const output = lines.join("\n");
+    // SPLIT_ISSUE group heading must appear
+    expect(output).toContain("SPLIT_ISSUE");
+    // The patch must be rendered with the correct format from describePatch
+    expect(output).toContain("#15 split into 2 issues — split into auth and error handling concerns");
+  });
+
   it("drives the real ReconciliationService end-to-end through a fake pi executable", async () => {
     const mixedEpic = makeIssue(
       12,
