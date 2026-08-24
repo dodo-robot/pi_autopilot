@@ -6,6 +6,8 @@ import type { AbandonCommandDeps } from "./commands/abandon.js";
 import { registerAbandonCommand } from "./commands/abandon.js";
 import type { AnalyzeCommandDeps } from "./commands/analyze.js";
 import { registerAnalyzeCommand } from "./commands/analyze.js";
+import type { DiscoverCommandDeps } from "./commands/discover.js";
+import { registerDiscoverCommand } from "./commands/discover.js";
 import type { CheckCommandDeps } from "./commands/check.js";
 import { registerCheckCommand } from "./commands/check.js";
 import type { InspectCommandDeps } from "./commands/inspect.js";
@@ -36,6 +38,7 @@ import { registerQueueCommand } from "./commands/queue.js";
 export type CliDeps = CheckCommandDeps &
   PrepareCommandDeps &
   AnalyzeCommandDeps &
+  DiscoverCommandDeps &
   RunCommandDeps &
   StatusCommandDeps &
   InspectCommandDeps &
@@ -62,6 +65,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
   registerCheckCommand(program, deps);
   registerPrepareCommand(program, deps);
   registerAnalyzeCommand(program, deps);
+  registerDiscoverCommand(program, deps);
   registerReconcileCommand(program, deps);
   registerReconcileApplyCommand(program, deps);
   registerBootstrapCommand(program, deps);
