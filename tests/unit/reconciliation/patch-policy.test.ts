@@ -49,6 +49,18 @@ const cases: Array<{ patch: BacklogPatch; policy: "auto-safe" | "requires-approv
     patch: { type: "REMOVE_DEPENDENCY", issue: 1, dependsOn: 2, reason: "no longer needed" },
     policy: "requires-approval",
   },
+  {
+    patch: {
+      type: "SPLIT_ISSUE",
+      issue: 1,
+      reason: "spans two independent behavioral outcomes",
+      children: [
+        { title: "A", enrichment: { goal: "x", sourceRequirements: [], acceptanceCriteria: [], constraints: [], nonGoals: [], validation: [], relevantAreas: [] } },
+        { title: "B", enrichment: { goal: "x", sourceRequirements: [], acceptanceCriteria: [], constraints: [], nonGoals: [], validation: [], relevantAreas: [] } },
+      ],
+    },
+    policy: "requires-approval",
+  },
   { patch: { type: "MARK_STALE", issue: 1, reason: "superseded" }, policy: "requires-approval" },
   {
     patch: {
