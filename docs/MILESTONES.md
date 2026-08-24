@@ -63,10 +63,17 @@ Implementation plan: `docs/superpowers/plans/2026-08-21-resume-failed-run-and-fr
 
 ---
 
-## M3 — Autonomous backlog executor 🔲
+## M3 — Autonomous backlog executor ✅
 
 **Scope:** Unattended loop over ready issues — auto-select, run, and
 publish without human per-issue invocation.
+
+Delivered: `autopilot start` launches a detached sequential daemon from an
+explicit issue list or a repository-matching analyze report, `stop` requests
+clean stage-boundary shutdown, `status` shows daemon progress and current run
+stage, and crash startup auto-resumes interrupted runs before continuing the
+queue. Queue outcomes are persisted in `queue.json`; role overrides and
+refiner timeout are carried from `start` into daemon-run `RunService` calls.
 
 Design spec: `docs/superpowers/specs/2026-08-21-pi-autopilot-m3-design.md`
 Implementation plan: `docs/superpowers/plans/2026-08-21-pi-autopilot-m3.md`

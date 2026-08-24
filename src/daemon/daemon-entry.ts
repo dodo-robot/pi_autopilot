@@ -95,7 +95,7 @@ async function main(): Promise<void> {
         listNonterminalRuns: () => runStore.listNonterminalRuns(),
         transition: (id, from, to, ref) => runStore.transition(id, from as any, to as any, ref),
       },
-      overrides: {},
+      overrides: queue.overrides ?? {},
     });
 
     await runner.run();

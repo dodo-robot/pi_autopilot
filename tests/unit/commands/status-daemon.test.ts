@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { registerStatusCommand } from "../../../src/commands/status.js";
 import type { StatusCommandDeps } from "../../../src/commands/status.js";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { RunStore } from "../../../src/persistence/run-store.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DaemonQueue } from "../../../src/daemon/queue-store.js";
@@ -75,6 +76,32 @@ describe("status command — daemon block", () => {
     expect(output).toMatch(/Current\s+#29/);
     expect(output).toMatch(/Queue\s+#30/);
     expect(output).toMatch(/Done.*#28.*PR_OPEN/);
+  });
+
+  it("prints the current issue stage when an active run exists", async () => {
+    writePid(tmpDir, process.pid);
+    writeQueue(tmpDir, {
+      repository: { owner: "acme", repo: "widgets" },
+      issues: [28, 29],
+      currentIndex: 0,
+      startedAt: new Date().toISOString(),
+      completedRuns: [],
+    });
+    const store = new RunStore(path.join(tmpDir, "autopilot.db"));
+    try {
+      const run = store.createRun({ repository: { owner: "acme", repo: "widgets" }, issueNumber: 28 });
+      store.transition(run.id, "PREFLIGHT", "READINESS_CHECK", null);
+    } finally {
+      store.close();
+    }
+
+    const deps = makeDeps(tmpDir);
+    await runStatus(deps);
+
+    const output = (deps.stdout as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => c[0])
+      .join("\n");
+    expect(output).toMatch(/Current\s+#28\s+\[READINESS_CHECK\]/);
   });
 
   it("existing status <run-id> still works", async () => {

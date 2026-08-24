@@ -58,6 +58,7 @@ export interface RunOverrides {
   refiner?: RoleModelOverride;
   implementer?: RoleModelOverride;
   reviewer?: RoleModelOverride;
+  refinerTimeoutMs?: number;
 }
 
 export interface RunSummary {
@@ -196,6 +197,7 @@ export class RunService {
         refinerModel,
         implementerModel,
         reviewerModel,
+        overrides,
         ...(this.deps.onProgress === undefined ? {} : { onProgress: this.deps.onProgress }),
       });
 
@@ -335,6 +337,7 @@ export class RunService {
         refinerModel,
         implementerModel,
         reviewerModel,
+        overrides,
         initialCounters,
         initialAttemptSequence,
       });
@@ -359,6 +362,7 @@ interface RunAttemptDeps {
   refinerModel: ResolvedRoleModel;
   implementerModel: ResolvedRoleModel;
   reviewerModel: ResolvedRoleModel;
+  overrides: RunOverrides;
   onProgress?: (text: string) => void;
   /**
    * Preloaded budget counters for a resumed run (attempts/cycles already
@@ -574,7 +578,9 @@ class RunAttempt {
       artifacts: this.deps.artifacts,
       paths: this.deps.paths,
       refinerModel: this.deps.refinerModel,
-      refinerTimeoutMs: this.deps.config.budgets.refiner.timeoutMinutes * 60_000,
+      refinerTimeoutMs:
+        this.deps.overrides.refinerTimeoutMs ??
+        this.deps.config.budgets.refiner.timeoutMinutes * 60_000,
       analysisId: () => analysisId(this.deps.run.issueNumber),
     });
 

@@ -7,8 +7,13 @@ import { appPaths } from "../platform/paths.js";
 import { PidFile } from "../daemon/pid-file.js";
 import { QueueStore } from "../daemon/queue-store.js";
 import { parseBacklogReport } from "../domain/backlog.js";
-import { resolveRepositoryContext, safeProcessEnv } from "../github/repository-context.js";
+import type { RepositoryRef } from "../domain/contracts.js";
+import { GitHubAdapter } from "../github/github-adapter.js";
+import { resolveRepositoryContext } from "../github/repository-context.js";
 import { ProcessRunner } from "../platform/process-runner.js";
+import { ThinkingLevelSchema } from "../config/schema.js";
+import type { RoleModelEntry, RoleModelOverride } from "../config/schema.js";
+import type { RunOverrides } from "../workflow/run-service.js";
 import { resolveIssueRefs } from "./args.js";
 
 export interface StartCommandDeps {
@@ -23,23 +28,109 @@ export interface StartCommandDeps {
   verifyIssues?: (issueNumbers: number[]) => Promise<void>;
 }
 
-/** Find the most recent backlog-report.json in the runs directory (by generatedAt). */
-function findLatestBacklogReport(runsDir: string): ReturnType<typeof parseBacklogReport> | null {
+type BacklogReport = ReturnType<typeof parseBacklogReport>;
+
+function readBacklogReport(reportPath: string): BacklogReport | null {
+  if (!existsSync(reportPath)) return null;
+  try {
+    return parseBacklogReport(JSON.parse(readFileSync(reportPath, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+/** Find a backlog-report.json by run directory name or embedded analysisId. */
+function repositoryMatches(report: BacklogReport, repository: RepositoryRef | null): boolean {
+  return repository === null ||
+    (report.repository.owner === repository.owner && report.repository.repo === repository.repo);
+}
+
+function assertSafeReportId(reportId: string): void {
+  if (reportId.includes("/") || reportId.includes("\\") || reportId.includes("..")) {
+    throw new Error(`invalid analyze report id '${reportId}'`);
+  }
+}
+
+function findNamedBacklogReport(
+  runsDir: string,
+  reportId: string,
+  repository: RepositoryRef,
+): BacklogReport | null {
+  assertSafeReportId(reportId);
   if (!existsSync(runsDir)) return null;
-  let latest: ReturnType<typeof parseBacklogReport> | null = null;
+
+  const direct = readBacklogReport(path.join(runsDir, reportId, "backlog-report.json"));
+  if (direct !== null && repositoryMatches(direct, repository)) return direct;
+
   for (const runId of readdirSync(runsDir)) {
-    const reportPath = path.join(runsDir, runId, "backlog-report.json");
-    if (!existsSync(reportPath)) continue;
-    try {
-      const report = parseBacklogReport(JSON.parse(readFileSync(reportPath, "utf8")));
-      if (latest === null || report.generatedAt > latest.generatedAt) {
-        latest = report;
-      }
-    } catch {
-      // skip malformed reports
+    const report = readBacklogReport(path.join(runsDir, runId, "backlog-report.json"));
+    if (report?.analysisId === reportId && repositoryMatches(report, repository)) return report;
+  }
+  return null;
+}
+
+/** Find the most recent backlog-report.json in the runs directory (by generatedAt). */
+function findLatestBacklogReport(runsDir: string, repository: RepositoryRef): BacklogReport | null {
+  if (!existsSync(runsDir)) return null;
+  let latest: BacklogReport | null = null;
+  for (const runId of readdirSync(runsDir)) {
+    const report = readBacklogReport(path.join(runsDir, runId, "backlog-report.json"));
+    if (
+      report !== null &&
+      repositoryMatches(report, repository) &&
+      (latest === null || report.generatedAt > latest.generatedAt)
+    ) {
+      latest = report;
     }
   }
   return latest;
+}
+
+function parseThinking(value: string): RoleModelEntry["thinking"] {
+  const parsed = ThinkingLevelSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(
+      `invalid thinking level '${value}' (expected one of ${ThinkingLevelSchema.options.join(", ")})`,
+    );
+  }
+  return parsed.data;
+}
+
+function mergeOverride(
+  model: string | undefined,
+  thinking: string | undefined,
+): RoleModelOverride | undefined {
+  const override: RoleModelOverride = {};
+  if (model !== undefined) override.model = model;
+  if (thinking !== undefined) override.thinking = parseThinking(thinking);
+  return override.model !== undefined || override.thinking !== undefined ? override : undefined;
+}
+
+function resolveStartOverrides(opts: Record<string, string | boolean | undefined>): RunOverrides {
+  const overrides: RunOverrides = {};
+  const refiner = mergeOverride(
+    typeof opts.refinerModel === "string" ? opts.refinerModel : undefined,
+    typeof opts.refinerThinking === "string" ? opts.refinerThinking : undefined,
+  );
+  const implementer = mergeOverride(
+    typeof opts.implementerModel === "string" ? opts.implementerModel : undefined,
+    typeof opts.implementerThinking === "string" ? opts.implementerThinking : undefined,
+  );
+  const reviewer = mergeOverride(
+    typeof opts.reviewerModel === "string" ? opts.reviewerModel : undefined,
+    typeof opts.reviewerThinking === "string" ? opts.reviewerThinking : undefined,
+  );
+  if (refiner !== undefined) overrides.refiner = refiner;
+  if (implementer !== undefined) overrides.implementer = implementer;
+  if (reviewer !== undefined) overrides.reviewer = reviewer;
+  if (typeof opts.refinerTimeout === "string") {
+    const minutes = Number(opts.refinerTimeout);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      throw new Error("invalid refiner timeout (expected a positive number of minutes)");
+    }
+    overrides.refinerTimeoutMs = minutes * 60_000;
+  }
+  return overrides;
 }
 
 function defaultSpawnDaemon(daemonEntryPath: string, env: Record<string, string>): { pid: number } {
@@ -88,9 +179,34 @@ export function registerStartCommand(program: Command, deps: StartCommandDeps = 
 
       // --- Resolve issue queue ---
       let issues: number[];
+      let ctx: Awaited<ReturnType<typeof resolveRepositoryContext>> | null = null;
+      let overrides: RunOverrides;
+      try {
+        overrides = resolveStartOverrides(opts);
+      } catch (err) {
+        stderr(`start: ${err instanceof Error ? err.message : String(err)}`);
+        setExitCode(1);
+        return;
+      }
 
       if (opts.fromAnalyze === true || typeof opts.fromAnalyze === "string") {
-        const report = findLatestBacklogReport(paths.runsDir);
+        try {
+          ctx = await resolveFn(cwd, runner);
+        } catch (err) {
+          stderr(`start: ${err instanceof Error ? err.message : String(err)}`);
+          setExitCode(1);
+          return;
+        }
+        let report: BacklogReport | null;
+        try {
+          report = typeof opts.fromAnalyze === "string"
+            ? findNamedBacklogReport(paths.runsDir, opts.fromAnalyze, ctx.repository)
+            : findLatestBacklogReport(paths.runsDir, ctx.repository);
+        } catch (err) {
+          stderr(`start: ${err instanceof Error ? err.message : String(err)}`);
+          setExitCode(1);
+          return;
+        }
         if (report === null) {
           stderr("no analyze report found — run autopilot analyze first");
           setExitCode(1);
@@ -104,8 +220,15 @@ export function registerStartCommand(program: Command, deps: StartCommandDeps = 
         issues = report.executable;
       } else if (issueArgs.length > 0) {
         try {
-          const ctx = await resolveFn(cwd, runner);
+          ctx = await resolveFn(cwd, runner);
           issues = resolveIssueRefs(issueArgs, ctx);
+          const verifyIssues = deps.verifyIssues ?? (async (issueNumbers: number[]) => {
+            const github = await GitHubAdapter.create(ctx!.root, runner);
+            for (const number of issueNumbers) {
+              await github.getIssue(number);
+            }
+          });
+          await verifyIssues(issues);
         } catch (err) {
           stderr(`start: ${err instanceof Error ? err.message : String(err)}`);
           setExitCode(1);
@@ -118,13 +241,13 @@ export function registerStartCommand(program: Command, deps: StartCommandDeps = 
       }
 
       // --- Write queue ---
-      const ctx = await resolveFn(cwd, runner).catch(() => null);
       queueStore.write({
         repository: ctx?.repository ?? { owner: "unknown", repo: "unknown" },
         issues,
         currentIndex: 0,
         startedAt: new Date().toISOString(),
         completedRuns: [],
+        ...(Object.keys(overrides).length === 0 ? {} : { overrides }),
       });
 
       // --- Spawn daemon ---

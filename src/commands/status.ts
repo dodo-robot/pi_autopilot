@@ -76,11 +76,24 @@ export function registerStatusCommand(
         const remainingIssues = queue.issues.slice(queue.currentIndex + 1);
         const startedAt = new Date(queue.startedAt).getTime();
         const uptimeMs = Date.now() - startedAt;
+        let currentStage: RunStage | null = null;
+        if (currentIssue !== null) {
+          const runStore = new RunStore(paths.dbPath);
+          try {
+            currentStage = runStore.getActiveRunForIssue(
+              queue.repository.owner,
+              queue.repository.repo,
+              currentIssue,
+            )?.stage ?? null;
+          } finally {
+            runStore.close();
+          }
+        }
         stdout(formatDaemonStatus({
           pid,
           uptimeMs,
           currentIssue: currentIssue ?? null,
-          currentStage: null, // stage is in RunStore; omit for now (M4 can add)
+          currentStage,
           currentStartedAt: null,
           remainingIssues,
           completedRuns: queue.completedRuns,
