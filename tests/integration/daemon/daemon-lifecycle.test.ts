@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { createInitialSchedulerState } from "../../../src/scheduler/state.js";
 
 const SHIM_PATH = fileURLToPath(
   new URL("./fake-daemon-entry.mjs", import.meta.url),
@@ -34,6 +35,39 @@ function writeQueue(dataDir: string, issues: number[]): void {
       completedRuns: [],
     }),
   );
+}
+
+function writeSchedulerQueue(
+  dataDir: string,
+  issues: number[],
+  policyOverrides: { maxConcurrentRuns: number },
+): void {
+  const daemonDir = path.join(dataDir, "daemon");
+  mkdirSync(daemonDir, { recursive: true });
+  const startedAt = new Date().toISOString();
+  const policy = {
+    maxConcurrentRuns: policyOverrides.maxConcurrentRuns,
+    idleTimeoutMinutes: 0,
+    budgets: { maxElapsedMinutes: null, maxStartedRuns: null, maxFailedRuns: null },
+  };
+  writeFileSync(path.join(daemonDir, "queue.json"), JSON.stringify({
+    repository: { owner: "acme", repo: "widgets" },
+    issues,
+    currentIndex: 0,
+    startedAt,
+    completedRuns: [],
+    scheduler: createInitialSchedulerState({
+      policy,
+      startedAt,
+      issues: issues.map((issueNumber) => ({
+        issueNumber,
+        dependencies: [],
+        workspaceScope: { kind: "paths", patterns: [`src/${issueNumber}/**`], source: "issue-contract" },
+        initialState: "PENDING",
+        reason: "ready",
+      })),
+    }),
+  }, null, 2));
 }
 
 function spawnFakeDaemon(
@@ -169,6 +203,18 @@ describe("daemon lifecycle (integration)", () => {
     expect(completedIssues).toContain(28);
     expect(completedIssues).toContain(29);
     expect(completedIssues).toContain(99);
+  });
+
+  it("preserves sequential behavior with scheduler maxConcurrentRuns 1", async () => {
+    writeSchedulerQueue(dataDir, [28, 29], { maxConcurrentRuns: 1 });
+    const { wait } = spawnFakeDaemon(dataDir, { fakeDelayMs: 50 });
+
+    const exitCode = await wait();
+
+    expect(exitCode).toBe(0);
+    const queue = JSON.parse(readFileSync(path.join(dataDir, "daemon", "queue.json"), "utf8"));
+    expect(queue.completedRuns.map((run: { issueNumber: number }) => run.issueNumber)).toEqual([28, 29]);
+    expect(queue.scheduler.issues.map((issue: { state: string }) => issue.state)).toEqual(["COMPLETED", "COMPLETED"]);
   });
 });
 

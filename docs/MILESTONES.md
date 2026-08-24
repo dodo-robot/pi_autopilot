@@ -234,6 +234,22 @@ then writes the plan to GitHub.
 
 ---
 
+## 2026-08-24 — M4 dependency-aware scheduler ✅
+
+**Scope:** Bounded-concurrency daemon scheduling over explicit issue inputs or analyze/discover reports.
+
+- `scheduler.maxConcurrentRuns` plus `start --max-concurrent` control daemon concurrency; default remains `1`.
+- Scheduler state is persisted in `queue.json` while preserving M3 queue fields.
+- Dependencies are satisfied by GitHub-closed issues or local `PR_OPEN` history.
+- Path/glob workspace scopes prevent concurrent conflicting runs; unknown scope conflicts with everything.
+- Cross-queue elapsed/started/failed budgets stop new starts at scheduling boundaries without interrupting active runs.
+- `status` shows scheduler summary and per-issue state in human and JSON modes.
+
+Design spec: `docs/superpowers/specs/2026-08-24-m4-dependency-aware-scheduler-design.md`
+Implementation plan: `docs/superpowers/plans/2026-08-24-m4-dependency-aware-scheduler.md`
+
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and
@@ -251,18 +267,6 @@ priority; pick from the top.
   minimal shipped label behavior; final label taxonomy is still deferred.
 - **Concurrent application.** Apply-safe runs patches sequentially; concurrent
   application and conflict handling are deferred.
-
-### Concurrency and scheduling (M4) 🔲
-
-- **Concurrent execution of independent issues.** Daemon is strictly
-  sequential; explicitly deferred to M4 in the M3 design doc.
-  (requirements.md §8, §13)
-- **Workspace-conflict detection between parallel runs.** (requirements.md §8)
-- **Dependency-graph-aware scheduling** that prefers work whose
-  dependencies are satisfied, rather than a fixed queue order.
-  (requirements.md §13)
-- **Cross-queue budgets** — a total token/time/attempt cap spanning an
-  entire `start` run, not just one issue. (requirements.md §15)
 
 ### Merge governance (M5) 🔲
 

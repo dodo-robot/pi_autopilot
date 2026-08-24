@@ -80,6 +80,15 @@ for (let i = queue.currentIndex; i < queue.issues.length; i++) {
     runId: `fake-run-${issueNumber}`,
   });
   queue.currentIndex = i + 1;
+  if (queue.scheduler !== undefined) {
+    const schedulerIssue = queue.scheduler.issues.find((issue) => issue.issueNumber === issueNumber);
+    if (schedulerIssue !== undefined) {
+      schedulerIssue.state = "COMPLETED";
+      schedulerIssue.outcome = fakeOutcome;
+      schedulerIssue.runId = `fake-run-${issueNumber}`;
+    }
+    queue.scheduler.lastUpdatedAt = new Date().toISOString();
+  }
   atomicWrite(queuePath, JSON.stringify(queue, null, 2));
   log(`run complete issue=${issueNumber} outcome=${fakeOutcome}`);
   // Drain pending queue after each iteration
