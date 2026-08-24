@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { loadRepositoryConfig } from "../config/load-config.js";
 import { appPaths } from "../platform/paths.js";
 import { PidFile } from "../daemon/pid-file.js";
 import { QueueStore } from "../daemon/queue-store.js";
@@ -13,11 +14,21 @@ import { resolveRepositoryContext } from "../github/repository-context.js";
 import { ProcessRunner } from "../platform/process-runner.js";
 import { ThinkingLevelSchema } from "../config/schema.js";
 import type { RoleModelEntry, RoleModelOverride } from "../config/schema.js";
+import { RunStore } from "../persistence/run-store.js";
+import { buildDependencySnapshots, detectDependencyCycles } from "../scheduler/dependencies.js";
 import {
   parseOptionalNonNegativeInt,
   parseOptionalPositiveInt,
+  resolveSchedulerPolicy,
   type SchedulerCliOverrides,
+  type SchedulerPolicy,
 } from "../scheduler/policy.js";
+import {
+  createInitialSchedulerState,
+  type InitialSchedulerIssueInput,
+  type SchedulerState,
+} from "../scheduler/state.js";
+import { parseWorkspaceScopeFromIssueBody } from "../scheduler/workspace-scope.js";
 import type { RunOverrides } from "../workflow/run-service.js";
 import { resolveIssueRefs } from "./args.js";
 
@@ -31,6 +42,13 @@ export interface StartCommandDeps {
   resolveContext?: (root: string, processRunner: ProcessRunner) => Promise<ReturnType<typeof resolveRepositoryContext>>;
   processRunner?: ProcessRunner;
   verifyIssues?: (issueNumbers: number[]) => Promise<void>;
+  createSchedulerState?: (input: {
+    repository: RepositoryRef;
+    issueNumbers: number[];
+    policy: SchedulerPolicy;
+    now: string;
+  }) => Promise<SchedulerState>;
+  now?: () => string;
 }
 
 type BacklogReport = ReturnType<typeof parseBacklogReport>;
@@ -168,6 +186,88 @@ function resolveSchedulerCliOverrides(opts: Record<string, string | boolean | un
   };
 }
 
+async function buildSchedulerState(input: {
+  root: string;
+  repository: RepositoryRef;
+  issueNumbers: number[];
+  policy: SchedulerPolicy;
+  now: string;
+  runner: ProcessRunner;
+  dataDir?: string;
+}): Promise<SchedulerState> {
+  const github = await GitHubAdapter.create(input.root, input.runner);
+  const issues: Array<{ issueNumber: number; body: string }> = [];
+  for (const issueNumber of input.issueNumbers) {
+    const issue = await github.getIssue(issueNumber);
+    issues.push({ issueNumber, body: issue.body });
+  }
+
+  const runStore = new RunStore(appPaths(input.dataDir).dbPath);
+  try {
+    const snapshots = await buildDependencySnapshots({
+      repository: input.repository,
+      issues,
+      now: () => input.now,
+      getIssueState: async (issueNumber) => (await github.getIssue(issueNumber)).state,
+      hasLocalPrOpen: async (issueNumber) => runStore.hasSuccessfulPrOpenForIssue(
+        input.repository.owner,
+        input.repository.repo,
+        issueNumber,
+      ),
+    });
+    const graph = new Map<number, number[]>(
+      issues.map((issue) => [
+        issue.issueNumber,
+        (snapshots.get(issue.issueNumber) ?? []).map((dependency) => dependency.issueNumber),
+      ]),
+    );
+    const cyclic = detectDependencyCycles(graph);
+    const normalized: InitialSchedulerIssueInput[] = issues.map((issue) => {
+      const dependencies = snapshots.get(issue.issueNumber) ?? [];
+      const hasInvalid = dependencies.some((dependency) => dependency.source === "invalid");
+      const hasUnsatisfied = dependencies.some((dependency) => !dependency.satisfied);
+      const workspaceScope = parseWorkspaceScopeFromIssueBody(issue.body);
+      if (cyclic.has(issue.issueNumber)) {
+        return {
+          issueNumber: issue.issueNumber,
+          dependencies,
+          workspaceScope,
+          initialState: "DEFERRED_INVALID",
+          reason: "dependency cycle",
+        };
+      }
+      if (hasInvalid) {
+        return {
+          issueNumber: issue.issueNumber,
+          dependencies,
+          workspaceScope,
+          initialState: "DEFERRED_INVALID",
+          reason: "invalid dependency metadata",
+        };
+      }
+      if (hasUnsatisfied) {
+        return {
+          issueNumber: issue.issueNumber,
+          dependencies,
+          workspaceScope,
+          initialState: "DEFERRED_DEPENDENCY",
+          reason: "waiting for dependencies",
+        };
+      }
+      return {
+        issueNumber: issue.issueNumber,
+        dependencies,
+        workspaceScope,
+        initialState: "PENDING",
+        reason: "ready",
+      };
+    });
+    return createInitialSchedulerState({ policy: input.policy, startedAt: input.now, issues: normalized });
+  } finally {
+    runStore.close();
+  }
+}
+
 function defaultSpawnDaemon(daemonEntryPath: string, env: Record<string, string>): { pid: number } {
   const child = spawn(process.execPath, [daemonEntryPath], {
     detached: true,
@@ -230,7 +330,6 @@ export function registerStartCommand(program: Command, deps: StartCommandDeps = 
         setExitCode(1);
         return;
       }
-      void schedulerCliOverrides;
 
       if (opts.fromAnalyze === true || typeof opts.fromAnalyze === "string") {
         try {
@@ -283,13 +382,48 @@ export function registerStartCommand(program: Command, deps: StartCommandDeps = 
         return;
       }
 
+      if (ctx === null) {
+        stderr("start: failed to resolve repository context");
+        setExitCode(1);
+        return;
+      }
+
+      let scheduler: SchedulerState;
+      let startedAt: string;
+      try {
+        const config = await loadRepositoryConfig(ctx.root);
+        const schedulerPolicy = resolveSchedulerPolicy(config, schedulerCliOverrides);
+        startedAt = (deps.now ?? (() => new Date().toISOString()))();
+        scheduler = deps.createSchedulerState !== undefined
+          ? await deps.createSchedulerState({
+              repository: ctx.repository,
+              issueNumbers: issues,
+              policy: schedulerPolicy,
+              now: startedAt,
+            })
+          : await buildSchedulerState({
+              root: ctx.root,
+              repository: ctx.repository,
+              issueNumbers: issues,
+              policy: schedulerPolicy,
+              now: startedAt,
+              runner,
+              ...(deps.dataDir === undefined ? {} : { dataDir: deps.dataDir }),
+            });
+      } catch (err) {
+        stderr(`start: ${err instanceof Error ? err.message : String(err)}`);
+        setExitCode(1);
+        return;
+      }
+
       // --- Write queue ---
       queueStore.write({
-        repository: ctx?.repository ?? { owner: "unknown", repo: "unknown" },
+        repository: ctx.repository,
         issues,
         currentIndex: 0,
-        startedAt: new Date().toISOString(),
+        startedAt,
         completedRuns: [],
+        scheduler,
         ...(Object.keys(overrides).length === 0 ? {} : { overrides }),
       });
 

@@ -6,15 +6,33 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BacklogReport } from "../../../src/domain/backlog.js";
+import { createInitialSchedulerState } from "../../../src/scheduler/state.js";
 
 const REPO = { owner: "acme", repo: "widgets" };
 
-function fakeContext() {
+function fakeContext(root: string) {
   return {
+    root,
     repository: REPO,
-    remote: "https://github.com/acme/widgets.git",
-    cwd: "/repo",
+    originUrl: "https://github.com/acme/widgets.git",
+    currentBranch: "main",
+    isClean: true,
   };
+}
+
+function writeConfig(root: string): void {
+  const configDir = path.join(root, ".pi");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(
+    path.join(configDir, "autopilot.yaml"),
+    [
+      "version: 1",
+      "commands:",
+      "  verify:",
+      "    - npm test",
+      "",
+    ].join("\n"),
+  );
 }
 
 function writeAnalyzeReport(dataDir: string, report: Partial<BacklogReport> & { executable: number[] }, runId = `analyze-${Date.now()}`) {
@@ -45,9 +63,20 @@ function makeDeps(tmpDir: string, overrides: Partial<StartCommandDeps> = {}): St
     stderr: vi.fn(),
     setExitCode: vi.fn(),
     spawnDaemon: vi.fn().mockReturnValue({ pid: 12345 }),
-    resolveContext: vi.fn().mockResolvedValue(fakeContext()),
+    resolveContext: vi.fn().mockResolvedValue(fakeContext(tmpDir)),
     processRunner: {} as any,
     verifyIssues: vi.fn().mockResolvedValue(undefined),
+    createSchedulerState: vi.fn(async ({ issueNumbers, policy, now }) => createInitialSchedulerState({
+      policy,
+      startedAt: now,
+      issues: issueNumbers.map((issueNumber) => ({
+        issueNumber,
+        dependencies: [],
+        workspaceScope: { kind: "paths", patterns: [`src/${issueNumber}/**`], source: "issue-contract" },
+        initialState: "PENDING",
+        reason: "ready",
+      })),
+    })),
     ...overrides,
   };
 }
@@ -64,6 +93,7 @@ describe("start command", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(path.join(tmpdir(), "start-test-"));
+    writeConfig(tmpDir);
   });
 
   afterEach(() => {
@@ -173,6 +203,34 @@ describe("start command", () => {
     });
   });
 
+  it("writes scheduler state and policy into queue.json", async () => {
+    const spawned: Array<{ env: Record<string, string> }> = [];
+    const deps = makeDeps(tmpDir, {
+      now: () => "2026-08-24T00:00:00.000Z",
+      spawnDaemon: (_entry, env) => { spawned.push({ env }); return { pid: 123 }; },
+      createSchedulerState: async ({ issueNumbers, policy, now }) => createInitialSchedulerState({
+        policy,
+        startedAt: now,
+        issues: issueNumbers.map((issueNumber) => ({
+          issueNumber,
+          dependencies: [],
+          workspaceScope: { kind: "paths", patterns: [`src/${issueNumber}/**`], source: "issue-contract" },
+          initialState: "PENDING",
+          reason: "ready",
+        })),
+      }),
+    });
+
+    await runStart(deps, ["42", "43", "--max-concurrent", "2", "--max-started-runs", "5"]);
+
+    const queue = JSON.parse(readFileSync(path.join(tmpDir, "daemon", "queue.json"), "utf8"));
+    expect(queue.issues).toEqual([42, 43]);
+    expect(queue.scheduler.policy.maxConcurrentRuns).toBe(2);
+    expect(queue.scheduler.policy.budgets.maxStartedRuns).toBe(5);
+    expect(queue.scheduler.issues.map((issue: { issueNumber: number }) => issue.issueNumber)).toEqual([42, 43]);
+    expect(spawned).toHaveLength(1);
+  });
+
   it("verifies explicit issues exist before spawning the daemon", async () => {
     const verifyIssues = vi.fn().mockRejectedValue(new Error("missing issue #28"));
     const deps = makeDeps(tmpDir, { verifyIssues });
@@ -214,6 +272,7 @@ describe("start command scheduler flags", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(path.join(tmpdir(), "start-test-"));
+    writeConfig(tmpDir);
   });
 
   afterEach(() => {
