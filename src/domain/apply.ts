@@ -27,6 +27,7 @@ export const ApplyEntrySchema = z.object({
   outcome: ApplyOutcomeSchema,
   detail: z.string(),
   appliedIssueNumber: z.number().int().positive().optional(),
+  appliedIssueNumbers: z.array(z.number().int().positive()).optional(),
   declineReason: z.string().optional(),
 });
 export type ApplyEntry = z.infer<typeof ApplyEntrySchema>;

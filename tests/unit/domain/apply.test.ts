@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApplyReportSchema } from "../../../src/domain/apply.js";
+import { ApplyEntrySchema, ApplyReportSchema } from "../../../src/domain/apply.js";
 
 describe("ApplyReportSchema", () => {
   it("parses a report with applied, skipped, and failed entries", () => {
@@ -84,5 +84,40 @@ describe("ApplyReportSchema", () => {
       summary: { applied: 0, skippedRequiresApproval: 0, skippedIdempotent: 0, skippedUser: 0, failed: 0, previewed: 0 },
     };
     expect(() => ApplyReportSchema.parse(bad)).toThrow();
+  });
+});
+
+describe("ApplyEntrySchema", () => {
+  it("parses an entry with plural appliedIssueNumbers", () => {
+    const entry = {
+      patchType: "CREATE_ISSUE",
+      targetIssue: null,
+      policy: "auto-safe",
+      outcome: { status: "applied" },
+      detail: "created from split",
+      appliedIssueNumbers: [124, 125],
+    };
+
+    const parsed = ApplyEntrySchema.safeParse(entry);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.appliedIssueNumbers).toEqual([124, 125]);
+    }
+  });
+
+  it("parses an entry without appliedIssueNumbers", () => {
+    const entry = {
+      patchType: "CREATE_ISSUE",
+      targetIssue: null,
+      policy: "auto-safe",
+      outcome: { status: "applied" },
+      detail: "created new issue",
+    };
+
+    const parsed = ApplyEntrySchema.safeParse(entry);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.appliedIssueNumbers).toBeUndefined();
+    }
   });
 });
