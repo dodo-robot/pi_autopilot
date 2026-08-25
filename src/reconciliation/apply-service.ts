@@ -39,6 +39,9 @@ export const APPLY_ARTIFACT = "reconciliation-apply.json";
 export const NEEDS_HUMAN_ANSWER_MARKER = "**Reconciliation NEEDS_HUMAN answered**";
 
 const DEFAULT_STALE_HOURS = 168;
+const TASK_LABEL = "task";
+const TASK_LABEL_COLOR = "e4e669";
+const SPLIT_LABEL_COLOR = "fbca04";
 
 /**
  * requires-approval patch types still offerable through the interactive
@@ -441,6 +444,9 @@ export class ApplyService {
       return skipEntry(patch, "idempotent", "already split into the proposed children");
     }
 
+    await this.deps.github.ensureLabel(TASK_LABEL, TASK_LABEL_COLOR);
+    await this.deps.github.ensureLabel(SPLIT_LABEL, SPLIT_LABEL_COLOR);
+
     const childRefs: Array<{ number: number; title: string }> = [];
     for (const child of patch.children) {
       const existing = await this.deps.github.findIssueByTitle(child.title);
@@ -449,7 +455,7 @@ export class ApplyService {
         (await this.deps.github.createIssue({
           title: child.title,
           body: renderReconciliationSection(child.enrichment),
-          labels: ["task"],
+          labels: [TASK_LABEL],
         }));
       await this.linkIssueToEpic(epicRef, issue);
       childRefs.push({ number: issue.number, title: issue.title });
@@ -660,10 +666,12 @@ export class ApplyService {
       };
     }
 
+    await this.deps.github.ensureLabel(TASK_LABEL, TASK_LABEL_COLOR);
+
     const created = await this.deps.github.createIssue({
       title: patch.spec.title,
       body: renderReconciliationSection(patch.spec.enrichment),
-      labels: ["task"],
+      labels: [TASK_LABEL],
     });
 
     try {

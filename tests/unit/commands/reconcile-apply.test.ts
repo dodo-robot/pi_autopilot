@@ -508,6 +508,7 @@ describe("autopilot reconcile-apply", () => {
       ["NEEDS_HUMAN", "skipped"],
     ]);
     expect(yesGithub.writes).toEqual([
+      "ensureLabel",
       "createIssue:Add apply-safe regression coverage",
       "updateIssueBody:#15",
       "updateIssueBody:#16",

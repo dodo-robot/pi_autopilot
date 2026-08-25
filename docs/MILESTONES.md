@@ -319,6 +319,26 @@ Implementation plan: `docs/superpowers/plans/2026-08-25-reconciler-steering.md`
 
 ---
 
+## 2026-08-25 — Minimal label policy for reconciliation-created issues
+
+`CREATE_ISSUE` now has an explicit minimal label policy. Final backlog label
+taxonomy remains deferred: reconciliation-created backlog work items receive
+only the structural `task` label, and an existing issue reused by title is
+linked to the epic without being relabeled. The reconciler does not infer labels
+from requirements, patch metadata, source documents, readiness, or epic context.
+
+Operational labels stay owned by their lifecycle paths: `agent:ready` and
+`agent:in-progress` belong to `discover`/daemon claim-release, while `split`
+marks a split parent as a tracking checklist rather than runnable task work.
+`reconcile apply` now ensures the labels it creates or applies exist first:
+`task` for `CREATE_ISSUE` and split children, and `split` before marking the
+split parent.
+
+Deferred: the final label taxonomy and any configurable repository-specific
+label policy.
+
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and
@@ -329,8 +349,6 @@ priority; pick from the top.
 
 - **Apply-all workflow.** Interactive per-patch `all` exists inside one run,
   but there is no broader apply-all command/workflow for a report set.
-- **Label policy on `CREATE_ISSUE`.** Created issues currently use the
-  minimal shipped label behavior; final label taxonomy is still deferred.
 - **Concurrent application.** Apply-safe runs patches sequentially; concurrent
   application and conflict handling are deferred.
 

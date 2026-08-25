@@ -137,7 +137,11 @@ class FakeGitHub implements GitHubPort {
       : { id: this.comments.indexOf(match), body: match.body };
   }
 
-  async ensureLabel(): Promise<void> {}
+  readonly ensuredLabels: Array<{ name: string; color: string }> = [];
+
+  async ensureLabel(name: string, color: string): Promise<void> {
+    this.ensuredLabels.push({ name, color });
+  }
 
   labelsByIssue = new Map<number, Set<string>>();
 
@@ -224,6 +228,8 @@ describe("ApplyService.apply", () => {
     expect(firstWrite?.number).toBe(12);
     expect(firstWrite?.body).toContain("- [ ] #17 New widget");
     expect(github.created[0]?.title).toBe("New widget");
+    expect(github.created[0]?.labels).toEqual(["task"]);
+    expect(github.ensuredLabels).toContainEqual({ name: "task", color: "e4e669" });
 
     const enrichWrite = github.updated.find(
       (u) => u.number === 15 && u.body.includes("autopilot-reconciliation"),
@@ -337,6 +343,29 @@ describe("ApplyService.apply", () => {
     expect(result.aborted).toBe(true);
     const pointer = await artifacts.readLatestApply("acme", "widgets", 12);
     expect(pointer).toEqual(priorApply);
+  });
+
+  it("does not relabel a matching live issue while linking it by title", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(21, makeIssue(21, "New widget", "Already exists outside the epic"));
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "CREATE_ISSUE",
+          epic: 12,
+          spec: { title: "new widget", enrichment: enrichment("Create new widget") },
+          reason: "missing",
+          policy: "auto-safe",
+        },
+      ]),
+    );
+
+    await service().apply(analysisId, opts);
+
+    expect(github.created).toHaveLength(0);
+    expect(github.ensuredLabels).toEqual([]);
   });
 
   it("links a matching unlinked live issue by title instead of creating a duplicate", async () => {
@@ -832,7 +861,9 @@ describe("ApplyService.apply", () => {
     expect(prompts).toBe(1);
     expect(previews[0]).toContain("split #20 into 2 issues:");
     expect(github.created.map((c) => c.title)).toEqual(["Reject revoked sessions", "Rate-limit failed logins"]);
-    expect(github.created.every((c) => c.labels.includes("task"))).toBe(true);
+    expect(github.created.map((c) => c.labels)).toEqual([["task"], ["task"]]);
+    expect(github.ensuredLabels).toContainEqual({ name: "task", color: "e4e669" });
+    expect(github.ensuredLabels).toContainEqual({ name: "split", color: "fbca04" });
 
     const epicBody = github.issues.get(12)?.body ?? "";
     expect(epicBody).toContain("#15 OAuth");
