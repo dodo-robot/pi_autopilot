@@ -29,6 +29,35 @@ describe("buildBootstrapperPrompt", () => {
     expect(prompt).toContain("exact");
   });
 
+  it("instructs the bootstrapper to use module-code plus sequence numbering for issue titles", () => {
+    const prompt = buildBootstrapperPrompt({
+      repository: { owner: "acme", repo: "widgets" },
+      requirementDocs: [{ path: "requirements.md", content: "## Auth\nUsers must log in." }],
+      hasExistingConfig: false,
+    });
+    expect(prompt).toContain("MODULE-##");
+    expect(prompt).toContain("M1-01");
+    expect(prompt).toContain("RNF-01");
+    expect(prompt).toContain("CRUE-01");
+  });
+
+  it("lists existing open leaf issues and instructs reuse by requirement code before creating a new issue", () => {
+    const prompt = buildBootstrapperPrompt({
+      repository: { owner: "acme", repo: "widgets" },
+      requirementDocs: [{ path: "requirements.md", content: "## Auth\nUsers must log in." }],
+      hasExistingConfig: false,
+      existingLeafIssues: [
+        { number: 123, title: "M1-13 Scorporo cespite in sotto-cespiti", requirementCodes: ["RF-M1-030"] },
+        { number: 456, title: "CRUE-08 Parametri di sicurezza e sessione", requirementCodes: ["CRUE-08"] },
+      ],
+    });
+    expect(prompt).toContain("#123");
+    expect(prompt).toContain("RF-M1-030");
+    expect(prompt).toContain("CRUE-08");
+    expect(prompt).toMatch(/reuse.*existing open issue/i);
+    expect(prompt).toMatch(/requirement code/i);
+  });
+
   it("says no open epics exist yet when the list is empty", () => {
     const prompt = buildBootstrapperPrompt({
       repository: { owner: "acme", repo: "widgets" },

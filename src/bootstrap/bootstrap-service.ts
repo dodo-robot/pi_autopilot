@@ -21,6 +21,7 @@ import { PlanStore, generatePlanId } from "./plan-store.js";
 import { renderPlan } from "./plan-renderer.js";
 import type { BootstrapPlan } from "./types.js";
 import type { PendingQuestion } from "./answer-pump.js";
+import type { ExistingEpicsLookup } from "./bootstrapper-prompt.js";
 
 export interface BootstrapperRunner {
   run(request: PiRunRequest): Promise<PiExecution>;
@@ -29,6 +30,16 @@ export interface BootstrapperRunner {
 /** Narrow seam over GitHubAdapter; only what plan() needs to look up existing epics. */
 export interface ExistingEpicsLookup {
   listOpenEpicTitles(): Promise<string[]>;
+}
+
+export interface ExistingLeafIssuesLookup {
+  listOpenLeafIssues(): Promise<
+    Array<{
+      number: number;
+      title: string;
+      requirementCodes: string[];
+    }>
+  >;
 }
 
 export interface BootstrapServiceDeps {
@@ -53,7 +64,7 @@ export interface BootstrapServiceDeps {
    * near-duplicate. Omitted (or a failing lookup) falls back to "no existing
    * epics" rather than blocking --plan, which stays usable without gh access.
    */
-  github?: ExistingEpicsLookup;
+  github?: ExistingEpicsLookup & ExistingLeafIssuesLookup;
 }
 
 export class BootstrapSizeError extends Error {
@@ -119,6 +130,25 @@ export class BootstrapService {
     }
   }
 
+  /**
+   * Best-effort lookup: a failure here (no gh auth, network, repo not yet
+   * pushed) must not block --plan, which has no other GitHub dependency.
+   */
+  private async fetchExistingLeafIssues(): Promise<
+    Array<{
+      number: number;
+      title: string;
+      requirementCodes: string[];
+    }>
+  > {
+    if (this.deps.github === undefined) return [];
+    try {
+      return await this.deps.github.listOpenLeafIssues();
+    } catch {
+      return [];
+    }
+  }
+
   async plan(requirementDocs: RequirementDoc[]): Promise<{ planId: string; markdownPath: string }> {
     const threshold = (this.deps.config as { bootstrap?: { tokenThreshold?: number } }).bootstrap?.tokenThreshold ?? 80_000;
     const sizeResult = checkSize(requirementDocs, threshold);
@@ -130,12 +160,14 @@ export class BootstrapService {
     const analysisDir = this.deps.paths.runDir(planId);
     const hasExistingConfig = this.deps.hasExistingConfig ?? false;
     const existingEpicTitles = await this.fetchExistingEpicTitles();
+    const existingLeafIssues = await this.fetchExistingLeafIssues();
 
     const prompt = buildBootstrapperPrompt({
       repository: this.deps.repository.repository,
       requirementDocs,
       hasExistingConfig,
       existingEpicTitles,
+      existingLeafIssues,
     });
 
     const skillConfig = (this.deps.config as { bootstrap?: { skillPaths?: string[] } }).bootstrap?.skillPaths ?? [];

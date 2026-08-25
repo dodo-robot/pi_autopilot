@@ -56,7 +56,10 @@ class FakePi {
 function makeService(
   pi = new FakePi(),
   threshold = 80_000,
-  github?: { listOpenEpicTitles: () => Promise<string[]> },
+  github?: {
+    listOpenEpicTitles: () => Promise<string[]>;
+    listOpenLeafIssues?: () => Promise<Array<{ number: number; title: string; requirementCodes: string[] }>>;
+  },
 ) {
   tmpDir = mkdtempSync(path.join(tmpdir(), "bootstrap-service-test-"));
   const paths = appPaths(tmpDir);
@@ -100,6 +103,20 @@ describe("BootstrapService.plan", () => {
     await service.plan([doc]);
     expect(pi.calls[0].prompt).toContain("M1 — Data Ingestion & Staging");
     expect(pi.calls[0].prompt).toContain("M2 — Motore di Calcolo");
+  });
+
+  it("fetches open leaf issues from GitHub and includes them in the prompt", async () => {
+    const pi = new FakePi();
+    const github = {
+      listOpenEpicTitles: async () => [],
+      listOpenLeafIssues: async () => [
+        { number: 123, title: "M1-13 Scorporo cespite in sotto-cespiti", requirementCodes: ["RF-M1-030"] },
+      ],
+    };
+    const { service } = makeService(pi, 80_000, github);
+    await service.plan([doc]);
+    expect(pi.calls[0].prompt).toContain("#123");
+    expect(pi.calls[0].prompt).toContain("RF-M1-030");
   });
 
   it("falls back to no existing epics when the GitHub lookup fails, without failing plan()", async () => {

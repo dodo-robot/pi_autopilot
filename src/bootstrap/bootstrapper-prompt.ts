@@ -12,23 +12,72 @@ export interface BootstrapperPromptInput {
    * of proposing a near-duplicate that a later --apply can't title-match.
    */
   existingEpicTitles?: string[];
+  /**
+   * Open leaf issues already on GitHub, fetched by the orchestrator before
+   * the session starts. Lets the model reuse an existing open issue when
+   * requirement codes match instead of creating a new issue.
+   * Each entry includes the issue number, title, and requirement codes for
+   * deduplication matching.
+   */
+  existingLeafIssues?: Array<{
+    number: number;
+    title: string;
+    requirementCodes: string[];
+  }>;
 }
 
 export function buildBootstrapperPrompt(input: BootstrapperPromptInput): string {
-  const { repository, requirementDocs, hasExistingConfig, existingEpicTitles = [] } = input;
+  const {
+    repository,
+    requirementDocs,
+    hasExistingConfig,
+    existingEpicTitles = [],
+    existingLeafIssues = [],
+  } = input;
 
   const existingEpicsSection =
     existingEpicTitles.length > 0
-      ? `The following epics already exist as open issues on GitHub:\n${existingEpicTitles.map((t) => `- ${t}`).join("\n")}\n\nIf a new epic you are proposing covers the same scope as one of these, reuse its title EXACTLY (character-for-character, including punctuation like em-dashes) instead of inventing a new one — a later step matches epics by exact title, and a near-miss (missing dash, added suffix, reworded) creates a duplicate epic on the board.`
+      ? `The following epics already exist as open issues on GitHub:
+${existingEpicTitles.map((t) => `- ${t}`).join("\n")}\n\nIf a new epic you are proposing covers the same scope as one of these, reuse its title EXACTLY (character-for-character, including punctuation like em-dashes) instead of inventing a new one — a later step matches epics by exact title, and a near-miss (missing dash, added suffix, reworded) creates a duplicate epic on the board.`
       : "No existing open epics were found on GitHub yet — you are proposing the initial epic structure.";
 
+  const existingLeafIssuesSection =
+    existingLeafIssues.length > 0
+      ? `The following open leaf issues already exist on GitHub:
+${existingLeafIssues
+        .map(
+          (issue) =>
+            `- #${issue.number}: **${issue.title}** (requirement codes: ${issue.requirementCodes.map((rc) => `\`${rc}\``).join(", ")})`
+        )
+        .join("\n")}
+
+**Reuse existing open issues:** If a new issue you are proposing covers the same scope as one of these, reuse its number and title EXACTLY — do not create a new issue. Match by requirement code (e.g., \`RF-M1-030\`, \`CRUE-08\`) to avoid duplicates.`
+      : existingEpicTitles.length === 0
+        ? "No existing open leaf issues were found on GitHub yet — you are proposing the initial issue structure."
+        : "Some existing open leaf issues were found on GitHub — consider reusing them if the scope matches.";
+
+  // Naming convention section for issue titles
+  const namingConventionSection = `
+## Issue naming convention
+
+When creating new issues, use **module-code + sequence numbering** for clear identification and deduplication:
+
+- **Epic issues:** Use format like \`MODULE-##\` where MODULE is the epic abbreviation (e.g., \`M1-01\`, \`RNF-01\`, \`CRUE-01\`)
+- **Task issues:** Use format like \`MODULE-##-##\` for tasks within epics
+
+This naming convention ensures:
+- Issues can be matched against existing issues during later stages
+- Deduplication checks can compare requirement codes (e.g., \`RF-M1-030\`, \`CRUE-08\`)
+- Clear organization by module and sequence within each module`;
+
   const requirementsSection = requirementDocs
-    .map((doc) => `--- ${doc.path} ---\n${doc.content}`)
+    .map((doc) => `--- ${doc.path} ---
+${doc.content}`)
     .join("\n\n");
 
   const configNote = hasExistingConfig
-    ? "An `autopilot.yaml` already exists in the repository — do NOT propose a new one."
-    : "No `autopilot.yaml` exists yet. Include a `proposedConfig` in your output with sensible role defaults.";
+    ? "An \`autopilot.yaml\` already exists in the repository — do NOT propose a new one."
+    : "No \`autopilot.yaml\` exists yet. Include a \`proposedConfig\` in your output with sensible role defaults.";
 
   return `You are the Bootstrapper role of an autonomous software development orchestrator.
 
@@ -46,6 +95,10 @@ ${configNote}
 
 ${existingEpicsSection}
 
+## Existing leaf issues on GitHub
+
+${existingLeafIssuesSection}
+
 ## Your output must include:
 
 1. **Epic structure** — group related requirements into named epics. Each epic gets a description and a list of child issues with titles, bodies, and requirement references.
@@ -55,6 +108,8 @@ ${existingEpicsSection}
 3. **Parallel tracks (waves)** — derive a wave-based execution ordering from the dependency graph. Issues in the same wave have no dependencies on each other and can be worked in parallel. Assign every issue to exactly one wave.
 
 4. **Project board** — propose a board title (default: the repo name) and standard columns ["Todo", "In Progress", "Done"].
+
+${namingConventionSection}
 
 ## Requirement documents
 
