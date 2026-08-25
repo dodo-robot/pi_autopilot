@@ -21,7 +21,6 @@ import { PlanStore, generatePlanId } from "./plan-store.js";
 import { renderPlan } from "./plan-renderer.js";
 import type { BootstrapPlan } from "./types.js";
 import type { PendingQuestion } from "./answer-pump.js";
-import type { ExistingEpicsLookup } from "./bootstrapper-prompt.js";
 
 export interface BootstrapperRunner {
   run(request: PiRunRequest): Promise<PiExecution>;

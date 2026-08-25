@@ -73,6 +73,8 @@ export interface GitHubPort {
   addSubIssue(parentNumber: number, subIssueId: number): Promise<void>;
   /** Titles of every open issue labeled "epic", for reuse-by-title prompting. */
   listOpenEpicTitles(): Promise<string[]>;
+  /** Open non-epic issues with extracted requirement codes for reuse prompting. */
+  listOpenLeafIssues(): Promise<Array<{ number: number; title: string; requirementCodes: string[] }>>;
   removeLabel(number: number, name: string): Promise<void>;
   closeIssue(number: number): Promise<void>;
 }
@@ -88,6 +90,7 @@ export interface OctokitIssueData {
   state: string;
   html_url: string;
   pull_request?: unknown;
+  labels?: Array<string | { name?: string }>;
 }
 
 export interface OctokitCommentData {
@@ -557,6 +560,30 @@ export class GitHubAdapter implements GitHubPort {
         .map((issue) => issue.title);
     } catch (error) {
       throw new GitHubError("failed to list open epic titles", { cause: error });
+    }
+  }
+
+  async listOpenLeafIssues(): Promise<Array<{ number: number; title: string; requirementCodes: string[] }>> {
+    try {
+      const pages = await this.paginate((page) =>
+        this.octokit.rest.issues.listForRepo({
+          owner: this.owner,
+          repo: this.repo,
+          state: "open",
+          per_page: PAGE_SIZE,
+          page,
+        }),
+      );
+      return pages
+        .filter((issue) => issue.pull_request === undefined)
+        .filter((issue) => !(issue.labels ?? []).some((label) => (typeof label === "string" ? label : label.name) === "epic"))
+        .map((issue) => ({
+          number: issue.number,
+          title: issue.title,
+          requirementCodes: Array.from(new Set(`${issue.title}\n${issue.body ?? ""}`.match(/\b(?:RF-[A-Z0-9-]+|CRUE-\d+|RNF-[A-Z0-9-]+)\b/g) ?? [])).sort(),
+        }));
+    } catch (error) {
+      throw new GitHubError("failed to list open leaf issues", { cause: error });
     }
   }
 

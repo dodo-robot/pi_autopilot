@@ -351,6 +351,42 @@ describe("GitHubAdapter", () => {
     await expect(github.listOpenEpicTitles()).resolves.toEqual([]);
   });
 
+  it("lists open leaf issues with extracted requirement codes", async () => {
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.listForRepo.mockResolvedValue({
+      data: [
+        {
+          number: 123,
+          node_id: "I_123",
+          title: "M1-13 Scorporo cespite in sotto-cespiti — RF-M1-030",
+          body: "Refs: CRUE-08 and RF-M1-030.",
+          updated_at: "2026-08-24T00:00:00Z",
+          state: "open",
+          html_url: "https://github.com/acme/widgets/issues/123",
+          labels: [],
+        },
+        {
+          number: 124,
+          node_id: "I_124",
+          title: "Epic parent",
+          body: "",
+          updated_at: "2026-08-24T00:00:00Z",
+          state: "open",
+          html_url: "https://github.com/acme/widgets/issues/124",
+          labels: [{ name: "epic" }],
+        },
+      ],
+    });
+    const { github } = await makeAdapter(octokit);
+    await expect(github.listOpenLeafIssues()).resolves.toEqual([
+      {
+        number: 123,
+        title: "M1-13 Scorporo cespite in sotto-cespiti — RF-M1-030",
+        requirementCodes: ["CRUE-08", "RF-M1-030"],
+      },
+    ]);
+  });
+
   it("returns null when no issue title matches", async () => {
     const { octokit } = makeOctokit();
     octokit.rest.issues.listForRepo.mockResolvedValue({ data: [] });
