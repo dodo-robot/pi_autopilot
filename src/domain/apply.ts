@@ -53,3 +53,11 @@ export const ApplyReportSchema = z.object({
   }),
 });
 export type ApplyReport = z.infer<typeof ApplyReportSchema>;
+
+/** A patch a human declined during reconcile-apply (outcome skipped by
+ * user), trimmed to the steering signal fed into a future reconcile. */
+export interface DeclinedPatch {
+  patchType: BacklogPatchType;
+  targetIssue: number;
+  reason?: string;
+}
