@@ -231,6 +231,17 @@ export class ApplyService {
     };
 
     await this.deps.artifacts.writeJson(analysisId, APPLY_ARTIFACT, result);
+    await this.deps.artifacts.writeLatestApply(
+      report.repository.owner,
+      report.repository.repo,
+      report.epicRef,
+      {
+        analysisId,
+        epicRef: report.epicRef,
+        repository: report.repository,
+        appliedAt: this.now(),
+      },
+    );
     return result;
   }
 

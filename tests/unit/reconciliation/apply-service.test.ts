@@ -254,6 +254,28 @@ describe("ApplyService.apply", () => {
     expect(stored).toEqual(result);
   });
 
+  it("writes the per-epic latest-apply index pointer on apply", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(15, issue15());
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        { type: "ENRICH_ISSUE", issue: 15, patch: enrichment("Add OAuth refresh"), reason: "missing criteria", policy: "auto-safe" },
+      ]),
+    );
+
+    const result = await service().apply(analysisId, { yes: true, force: false });
+
+    const pointer = await artifacts.readLatestApply("acme", "widgets", 12);
+    expect(pointer).not.toBeNull();
+    expect(pointer?.analysisId).toBe(analysisId);
+    expect(pointer?.epicRef).toBe(12);
+    expect(pointer?.repository).toEqual(repository);
+    expect(pointer?.appliedAt).toBe(now);
+    expect(result.summary.applied).toBe(1);
+  });
+
   it("links a matching unlinked live issue by title instead of creating a duplicate", async () => {
     github.issues.set(12, epic());
     github.issues.set(21, makeIssue(21, "New widget", "Already exists outside the epic"));
