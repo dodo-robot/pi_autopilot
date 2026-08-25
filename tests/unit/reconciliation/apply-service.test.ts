@@ -125,8 +125,16 @@ class FakeGitHub implements GitHubPort {
     throw new Error("not called");
   }
 
-  async findIssueCommentByMarker(): Promise<IssueCommentRef | null> {
-    return null;
+  async findIssueCommentByMarker(
+    issueNumber: number,
+    marker: string,
+  ): Promise<IssueCommentRef | null> {
+    const match = this.comments.find(
+      (comment) => comment.number === issueNumber && comment.body.includes(marker),
+    );
+    return match === undefined
+      ? null
+      : { id: this.comments.indexOf(match), body: match.body };
   }
 
   async ensureLabel(): Promise<void> {}
@@ -1171,6 +1179,43 @@ describe("ApplyService.apply", () => {
     expect(result.entries[0]?.appliedIssueNumber).toBe(336);
   });
 
+  it("re-running apply over an already-answered NEEDS_HUMAN does not prompt again or post a duplicate comment (idempotent)", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(336, makeIssue(336, "Anteprima HTML schemi ITAS 1", "..."));
+    // A prior apply already answered this NEEDS_HUMAN and posted its comment.
+    github.comments.push({
+      number: 336,
+      body: "**Reconciliation NEEDS_HUMAN answered**\n\nQ: Does Beta cover SP+CE only, or all 5 schemas?\nA: SP+CE only (recommendation accepted)",
+    });
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "NEEDS_HUMAN",
+          issue: 336,
+          ambiguityType: "CONFLICTING_REQUIREMENTS",
+          reason: "spec has two contradictory AC blocks",
+          questions: [{ question: "Does Beta cover SP+CE only, or all 5 schemas?", recommendation: "SP+CE only" }],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    let askedCount = 0;
+    const result = await service({
+      askQuestion: async () => {
+        askedCount += 1;
+        return { answer: "SP+CE only", accepted: true };
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(askedCount).toBe(0);
+    expect(github.comments).toHaveLength(1); // no duplicate posted
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "idempotent" });
+  });
+
   it("never auto-applies NEEDS_HUMAN under --yes even though it is offerable, and posts no comment", async () => {
     github.issues.set(12, epic());
     github.issues.set(336, makeIssue(336, "Anteprima HTML schemi ITAS 1", "..."));
@@ -1232,6 +1277,82 @@ describe("ApplyService.apply", () => {
     expect(askedCount).toBe(0);
     expect(github.comments).toHaveLength(0);
     expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "requires-approval" });
+  });
+
+  it("never bulk-applies a NEEDS_HUMAN patch after a prior 'all' interactive answer — it still prompts per question", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(15, issue15());
+    github.issues.set(336, makeIssue(336, "Anteprima HTML schemi ITAS 1", "..."));
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "ENRICH_ISSUE",
+          issue: 15,
+          patch: enrichment("Add OAuth refresh"),
+          reason: "missing criteria",
+          policy: "auto-safe",
+        },
+        {
+          type: "NEEDS_HUMAN",
+          issue: 336,
+          ambiguityType: "CONFLICTING_REQUIREMENTS",
+          reason: "spec has two contradictory AC blocks",
+          questions: [{ question: "Does Beta cover SP+CE only, or all 5 schemas?", recommendation: "SP+CE only" }],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    // The operator answers "all" for the auto-safe ENRICH_ISSUE; the
+    // requires-approval NEEDS_HUMAN must still stop for its own question.
+    const asked: Array<{ question: string; recommendation: string }> = [];
+    const result = await service({
+      confirmMenu: async () => "all",
+      askQuestion: async (question, recommendation) => {
+        asked.push({ question, recommendation });
+        return { answer: recommendation, accepted: true };
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.question).toBe("Does Beta cover SP+CE only, or all 5 schemas?");
+    expect(github.comments).toHaveLength(1);
+    expect(result.entries[1]?.outcome).toEqual({ status: "applied" });
+  });
+
+  it("rejects an old-format report whose NEEDS_HUMAN questions are plain strings, instead of silently posting a corrupt comment", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(336, makeIssue(336, "Anteprima HTML schemi ITAS 1", "..."));
+
+    // Pre-recommendation report format: questions was string[], not
+    // { question, recommendation }[]. It must be rejected with a clear error
+    // rather than rendering "undefined" questions and posting a garbage
+    // comment interactively.
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      {
+        ...baseReport([
+          {
+            type: "NEEDS_HUMAN",
+            issue: 336,
+            ambiguityType: "CONFLICTING_REQUIREMENTS",
+            reason: "spec has two contradictory AC blocks",
+            questions: ["Does Beta cover SP+CE only, or all 5 schemas?"],
+            policy: "requires-approval",
+          } as unknown as ReconciliationReport["patches"][number],
+        ]),
+      },
+    );
+
+    const result = service();
+    await expect(result.apply(analysisId, { yes: false })).rejects.toThrow(
+      /re-run reconcile/,
+    );
+    expect(github.comments).toHaveLength(0);
   });
 
   it("enforces the report staleness guard unless force is set", async () => {

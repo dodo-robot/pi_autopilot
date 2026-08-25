@@ -452,10 +452,11 @@ describe("autopilot reconcile-apply", () => {
   });
 
   it("prints a skipped entry's detail in human output, so NEEDS_HUMAN questions are visible", async () => {
-    // NEEDS_HUMAN is never offered interactively (no write action to
-    // confirm), so its questions are only reachable through this printed
-    // detail — skippedBy alone ("requires-approval") gives no hint what the
-    // ambiguity actually is.
+    // With --yes, NEEDS_HUMAN is skipped as requires-approval (unattended
+    // runs never answer its questions), so its questions are only reachable
+    // through this printed detail — skippedBy alone ("requires-approval")
+    // gives no hint what the ambiguity actually is. In interactive mode the
+    // questions are instead surfaced by per-question prompting, not this line.
     const report: ApplyReport = {
       ...APPLIED,
       entries: [

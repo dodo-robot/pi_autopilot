@@ -1,4 +1,5 @@
 import type { BacklogPatchType, PatchPolicy, ReconciledPatch } from "../domain/reconciliation.js";
+import { BacklogPatchSchema } from "../domain/reconciliation.js";
 import type { ApplyEntry, ApplyReport } from "../domain/apply.js";
 import type { RepositoryRef } from "../domain/contracts.js";
 import type { GitHubIssue, GitHubPort } from "../github/github-adapter.js";
@@ -30,6 +31,12 @@ import { RefinementSectionError } from "../readiness/refinement-section.js";
 
 export const REPORT_ARTIFACT = "reconciliation-report.json";
 export const APPLY_ARTIFACT = "reconciliation-apply.json";
+
+/** Leading marker of the comment `applyNeedsHumanFresh` posts with every
+ * answered NEEDS_HUMAN question. Used both to build the comment and, via
+ * `GitHubPort.findIssueCommentByMarker`, as the idempotency anchor that stops
+ * a re-run from posting a duplicate answer comment. */
+export const NEEDS_HUMAN_ANSWER_MARKER = "**Reconciliation NEEDS_HUMAN answered**";
 
 const DEFAULT_STALE_HOURS = 168;
 
@@ -115,6 +122,7 @@ export class ApplyService {
       analysisId,
       REPORT_ARTIFACT,
     );
+    this.assertValidReport(report, analysisId);
 
     const staleAgeHours =
       (Date.parse(this.now()) - Date.parse(report.generatedAt)) / (60 * 60 * 1000);
@@ -236,6 +244,24 @@ export class ApplyService {
   private promptLabel(patch: ReconciledPatch): string {
     const target = "issue" in patch && patch.issue !== null ? ` #${patch.issue}` : "";
     return `apply ${patch.type}${target}? [y] apply / [n] skip / [a] all / [q] abort `;
+  }
+
+  /**
+   * Reject a stored reconciliation report that no longer matches the current
+   * patch schema (e.g. a pre-recommendation report whose NEEDS_HUMAN
+   * questions are plain strings). Without this, a stale-format report would
+   * load via the raw `JSON.parse as T` cast and silently render "undefined"
+   * fields or post corrupt writes instead of failing cleanly.
+   */
+  private assertValidReport(report: ReconciliationReport, analysisId: string): void {
+    for (const patch of report.patches) {
+      const parsed = BacklogPatchSchema.safeParse(patch);
+      if (!parsed.success) {
+        throw new Error(
+          `stored report for ${analysisId} is incompatible with this version (patch #${patch.type}: ${parsed.error.issues[0]?.message ?? "validation failed"}); re-run reconcile to regenerate it`,
+        );
+      }
+    }
   }
 
   private async prepare(patch: ReconciledPatch, epicRef: number): Promise<Prepared> {
@@ -458,6 +484,23 @@ export class ApplyService {
     patch: Extract<ReconciledPatch, { type: "NEEDS_HUMAN" }>,
     issue: number,
   ): Promise<ApplyEntry> {
+    // Idempotency anchor: if a prior apply already posted the answer comment
+    // for this question set, skip rather than prompt again and post a
+    // duplicate (mirrors the closed-state re-check in applyMergeDuplicateFresh
+    // and the marker re-check in the split/enrich paths). Re-invoking apply
+    // over the same analysisId is therefore safe and resumes cleanly.
+    const existing = await this.deps.github.findIssueCommentByMarker(
+      issue,
+      NEEDS_HUMAN_ANSWER_MARKER,
+    );
+    if (existing !== null) {
+      return skipEntry(
+        patch,
+        "idempotent",
+        `answer comment already posted to #${issue}`,
+      );
+    }
+
     const answers: Array<{ question: string; answer: string; accepted: boolean }> = [];
     for (const q of patch.questions) {
       const result = await this.askQuestion(q.question, q.recommendation);
@@ -465,7 +508,7 @@ export class ApplyService {
     }
 
     const body = [
-      "**Reconciliation NEEDS_HUMAN answered**",
+      NEEDS_HUMAN_ANSWER_MARKER,
       "",
       ...answers.flatMap((a) => [
         `Q: ${a.question}`,

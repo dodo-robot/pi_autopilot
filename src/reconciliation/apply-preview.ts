@@ -12,6 +12,23 @@ export interface QuestionAnswer {
 }
 
 /**
+ * Default interactive read: one line from process stdin via a fresh
+ * readline interface that is closed immediately after. A bare
+ * `process.stdin.once("data", ...)` would put stdin into flowing mode and
+ * never release it, keeping the process alive after the CLI command has
+ * otherwise finished — so both prompts share this readline close() pattern
+ * (the same one bootstrap-service.ts's defaultQuestionHandler uses).
+ */
+const defaultReadLine = async (): Promise<string> => {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await rl.question("");
+  } finally {
+    rl.close();
+  }
+};
+
+/**
  * Prompt for a NEEDS_HUMAN question, offering the reconciler's own
  * recommendation as the default. Blank input accepts the recommendation
  * verbatim — there is no skip state; every question always gets an answer.
@@ -23,14 +40,7 @@ export async function askQuestion(
   question: string,
   recommendation: string,
   write: (s: string) => void = (s) => process.stdout.write(s),
-  readLine: () => Promise<string> = async () => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      return await rl.question("");
-    } finally {
-      rl.close();
-    }
-  },
+  readLine: () => Promise<string> = defaultReadLine,
 ): Promise<QuestionAnswer> {
   write(`Q: ${question}\n`);
   write(`Recommendation: ${recommendation}\n`);
@@ -115,14 +125,7 @@ export function renderNeedsHumanPreview(
 export async function confirmMenu(
   prompt: string,
   write: (s: string) => void = (s) => process.stdout.write(s),
-  readLine: () => Promise<string> = async () => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      return await rl.question("");
-    } finally {
-      rl.close();
-    }
-  },
+  readLine: () => Promise<string> = defaultReadLine,
 ): Promise<MenuAnswer> {
   for (;;) {
     write(prompt);
