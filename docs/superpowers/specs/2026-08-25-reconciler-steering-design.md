@@ -286,5 +286,15 @@ Tier 1 steering is complete when:
 - Tier 2: `NEEDS_HUMAN` Q&A convergence / comment read-back (the idempotent
   `NEEDS_HUMAN_ANSWER_MARKER` comment is ready to serve it later).
 - Steering on `requires-approval` gates or `failed` writes.
+- **Capturing a human's free-text decline reason.** `DeclinedPatch.reason`
+  is plumbed and tested, but no production writer populates `declineReason`
+  today (the interactive skip path captures only the `[y/n/a/q]` menu answer,
+  not a reason), so steering lines currently render without the `: reason`
+  suffix. Adopting `n` into a reason prompt is a future addition — the type
+  layer already supports it.
+- Single-slot pointer retention: the per-epic index points at the most recent
+  apply, so declines from apply N-2 are forgotten once apply N-1 lands. This is
+  deliberate for Tier 1; remembering the last few applies' declines is a
+  follow-on ("Tier 1.5").
 - Auto-resolution of a decline (the choice stays with the reconciler model).
 - A general apply-artifact search/discovery CLI.
