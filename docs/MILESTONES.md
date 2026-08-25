@@ -322,20 +322,20 @@ Implementation plan: `docs/superpowers/plans/2026-08-25-reconciler-steering.md`
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and
-`docs/resources/extend_requirements.md` as of 2026-08-22. Grouped by rough
+`docs/resources/extend_requirements.md` (as of 2026-08-25). Grouped by rough
 priority; pick from the top.
 
 ### Reconciliation apply-safe follow-ups 🔲
 
-- **Reconciler steering from apply results.** Declined/skipped apply
-  decisions are recorded, but they do not yet feed the next reconciliation
-  prompt or patch policy.
 - **Apply-all workflow.** Interactive per-patch `all` exists inside one run,
   but there is no broader apply-all command/workflow for a report set.
 - **Label policy on `CREATE_ISSUE`.** Created issues currently use the
   minimal shipped label behavior; final label taxonomy is still deferred.
 - **Concurrent application.** Apply-safe runs patches sequentially; concurrent
   application and conflict handling are deferred.
+
+_(Removed from this list as of 2026-08-25: **reconciler steering from apply
+results (Tier 1)** — now shipped; see its section above.)_
 
 ### Merge governance (M5) 🔲
 
