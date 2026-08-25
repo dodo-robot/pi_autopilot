@@ -96,7 +96,7 @@ export class ProjectsAdapter implements ProjectsPort {
     
     const octokit = new Octokit({
       auth: token,
-      request: { headers: { "X-GitHub-Api-Version": "2022-11-28" } },
+      request: { headers: { "X-GitHub-Api-Version": "2026-03-10" } },
     });
 
     // Determine owner type via REST; fall back to "user".

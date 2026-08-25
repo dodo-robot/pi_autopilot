@@ -21,6 +21,7 @@ afterEach(() => {
 
 function makeIssue(number: number, title: string): GitHubIssue {
   return {
+    id: number * 1000,
     number,
     nodeId: `N_${number}`,
     title,
@@ -36,9 +37,10 @@ class FakeGitHub implements ExtendedGitHubPort {
   createdIssues: CreateIssueInput[] = [];
   updatedBodies: Array<{ number: number; body: string }> = [];
   ensuredLabels: string[] = [];
+  subIssuesAdded: Array<{ parentNumber: number; subIssueId: number }> = [];
 
-  async getIssue(): Promise<GitHubIssue> {
-    return makeIssue(1, "stub");
+  async getIssue(number: number): Promise<GitHubIssue> {
+    return makeIssue(number, "stub");
   }
   async createIssueComment(): Promise<void> {}
   async closeIssue(): Promise<void> {}
@@ -74,6 +76,9 @@ class FakeGitHub implements ExtendedGitHubPort {
   }
   async ensureLabel(name: string): Promise<void> {
     this.ensuredLabels.push(name);
+  }
+  async addSubIssue(parentNumber: number, subIssueId: number): Promise<void> {
+    this.subIssuesAdded.push({ parentNumber, subIssueId });
   }
 }
 
@@ -132,7 +137,10 @@ interface MakeServiceResult {
   tmpDir: string;
 }
 
-function makeService(prompt?: (msg: string) => Promise<boolean>): MakeServiceResult {
+function makeService(
+  prompt?: (msg: string) => Promise<boolean>,
+  overrides?: Partial<ConstructorParameters<typeof ApplyService>[0]>,
+): MakeServiceResult {
   tmpDir = mkdtempSync(path.join(tmpdir(), "apply-service-test-"));
   const artifacts = new ArtifactStore(appPaths(tmpDir));
   const store = new PlanStore(artifacts);
@@ -144,6 +152,9 @@ function makeService(prompt?: (msg: string) => Promise<boolean>): MakeServiceRes
     projects,
     repositoryRoot: tmpDir,
     prompt,
+    // Tests don't want to wait on the real inter-request delay.
+    sleep: async () => {},
+    ...overrides,
   });
   return { service, store, github, projects, tmpDir };
 }
@@ -157,6 +168,33 @@ describe("ApplyService.apply", () => {
     expect(github.createdIssues).toHaveLength(2);
     expect(github.createdIssues[0].title).toBe("Auth");
     expect(github.createdIssues[1].title).toBe("Implement login");
+  });
+
+  it("reuses an existing GitHub issue instead of duplicating an epic with the same title", async () => {
+    // Simulates two independently-planned bootstrap runs proposing the same
+    // epic title (e.g. "M1 — Data Ingestion") — a second apply must not
+    // create a duplicate epic issue on GitHub.
+    const { service, store, github } = makeService(async () => true);
+    const existingEpic = makeIssue(50, "Auth");
+    (github as unknown as { issues: Map<number, GitHubIssue> }).issues = new Map([
+      [50, existingEpic],
+    ]);
+    await store.save(makePlan());
+    await service.apply("bootstrap-20260823-apply01");
+    // Only the child issue should have been created; the epic already existed.
+    expect(github.createdIssues.map((i) => i.title)).toEqual(["Implement login"]);
+  });
+
+  it("reuses an existing GitHub issue instead of duplicating a child issue with the same title", async () => {
+    const { service, store, github } = makeService(async () => true);
+    const existingChild = makeIssue(60, "Implement login");
+    (github as unknown as { issues: Map<number, GitHubIssue> }).issues = new Map([
+      [60, existingChild],
+    ]);
+    await store.save(makePlan());
+    await service.apply("bootstrap-20260823-apply01");
+    // Only the epic should have been created; the child issue already existed.
+    expect(github.createdIssues.map((i) => i.title)).toEqual(["Auth"]);
   });
 
   it("creates a board when none exists", async () => {
@@ -173,6 +211,38 @@ describe("ApplyService.apply", () => {
     await service.apply("bootstrap-20260823-apply01");
     // 1 epic + 1 child issue
     expect(projects.addedItems).toHaveLength(2);
+  });
+
+  it("links each child issue as a GitHub sub-issue of its epic", async () => {
+    const { service, store, github } = makeService(async () => true);
+    await store.save(makePlan());
+    await service.apply("bootstrap-20260823-apply01");
+    // 1 epic (#101) with 1 child issue (#102, db id 102000)
+    expect(github.subIssuesAdded).toEqual([{ parentNumber: 101, subIssueId: 102000 }]);
+  });
+
+  it("backfills githubId via getIssue when linking sub-issues on a plan created before githubId existed", async () => {
+    const { service, store, github } = makeService(async () => true);
+    const plan = makePlan();
+    // Simulate a plan applied before githubId/subIssueLinked were tracked:
+    // issues already created on GitHub, but githubId was never captured.
+    plan.applyState.epicsCreated = true;
+    plan.applyState.issuesCreated = true;
+    plan.epics[0]!.githubNumber = 101;
+    plan.epics[0]!.githubNodeId = "N_101";
+    plan.epics[0]!.issues[0]!.githubNumber = 102;
+    plan.epics[0]!.issues[0]!.githubNodeId = "N_102";
+    await store.save(plan);
+    await service.apply("bootstrap-20260823-apply01");
+    expect(github.subIssuesAdded).toEqual([{ parentNumber: 101, subIssueId: 102000 }]);
+  });
+
+  it("does not re-link sub-issues on second apply", async () => {
+    const { service, store, github } = makeService(async () => true);
+    await store.save(makePlan());
+    await service.apply("bootstrap-20260823-apply01");
+    await service.apply("bootstrap-20260823-apply01");
+    expect(github.subIssuesAdded).toHaveLength(1);
   });
 
   it("patches epic body with child issue checklist", async () => {
@@ -244,5 +314,93 @@ describe("ApplyService.apply", () => {
     await service.apply("bootstrap-20260823-apply01");
     expect(github.ensuredLabels).toContain("epic");
     expect(github.ensuredLabels).toContain("task");
+  });
+
+  it("does not recreate issues already created before a mid-loop failure", async () => {
+    const { service, store, github, tmpDir: dir } = makeService(async () => true);
+    const plan = makePlan();
+    // Two child issues on the epic so the loop has more than one iteration.
+    plan.epics[0]!.issues.push({
+      title: "Second issue",
+      body: "more work",
+      labels: ["task"],
+    });
+    await store.save(plan);
+
+    // Fail after the epic + first child issue are created, simulating a
+    // secondary rate limit mid-loop.
+    let calls = 0;
+    const originalCreateIssue = github.createIssue.bind(github);
+    github.createIssue = async (input: CreateIssueInput) => {
+      calls += 1;
+      if (calls === 3) throw new Error("secondary rate limit");
+      return originalCreateIssue(input);
+    };
+
+    await expect(service.apply("bootstrap-20260823-apply01")).rejects.toThrow(
+      "secondary rate limit",
+    );
+    expect(github.createdIssues.map((i) => i.title)).toEqual([
+      "Auth",
+      "Implement login",
+    ]);
+
+    // Reload the persisted plan directly: the successfully created issue
+    // must have its githubNumber recorded even though the step never
+    // reached completion.
+    const artifacts = new ArtifactStore(appPaths(dir));
+    const reloaded = await new PlanStore(artifacts).load("bootstrap-20260823-apply01");
+    const created = reloaded.epics[0]!.issues.find((i) => i.title === "Implement login");
+    expect(created?.githubNumber).toBeDefined();
+
+    // Retry: the already-created issue must not be recreated, only the
+    // second (never-created) issue should go through.
+    github.createIssue = originalCreateIssue;
+    await service.apply("bootstrap-20260823-apply01");
+    expect(github.createdIssues.map((i) => i.title)).toEqual([
+      "Auth",
+      "Implement login",
+      "Second issue",
+    ]);
+  });
+
+  it("sleeps between issue creations to avoid secondary rate limits", async () => {
+    const plan = makePlan();
+    plan.epics[0]!.issues.push({
+      title: "Second issue",
+      body: "more work",
+      labels: ["task"],
+    });
+    const sleepCalls: number[] = [];
+    const { service, store } = makeService(async () => true, {
+      createDelayMs: 250,
+      sleep: async (ms: number) => {
+        sleepCalls.push(ms);
+      },
+    });
+    await store.save(plan);
+    await service.apply("bootstrap-20260823-apply01");
+    // 1 epic + 2 child issues = 3 creates, plus 2 sub-issue links, sleeping after each.
+    expect(sleepCalls).toEqual([250, 250, 250, 250, 250]);
+  });
+
+  it("does not sleep when nothing needs to be created or linked", async () => {
+    const sleepCalls: number[] = [];
+    const { service, store } = makeService(async () => true, {
+      sleep: async (ms: number) => {
+        sleepCalls.push(ms);
+      },
+    });
+    const plan = makePlan();
+    plan.applyState.epicsCreated = true;
+    plan.applyState.issuesCreated = true;
+    plan.applyState.subIssuesLinked = true;
+    plan.epics[0]!.githubNumber = 1;
+    plan.epics[0]!.githubNodeId = "N_1";
+    plan.epics[0]!.issues[0]!.githubNumber = 2;
+    plan.epics[0]!.issues[0]!.githubNodeId = "N_2";
+    await store.save(plan);
+    await service.apply("bootstrap-20260823-apply01");
+    expect(sleepCalls).toEqual([]);
   });
 });

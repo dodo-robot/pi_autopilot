@@ -106,6 +106,10 @@ export function registerBootstrapCommand(
           setExitCode(1);
         } else {
           stderr(`autopilot bootstrap: ${error instanceof Error ? error.message : String(error)}`);
+          if (error instanceof Error && error.cause) {
+            const cause = error.cause;
+            stderr(`caused by: ${cause instanceof Error ? cause.message : String(cause)}`);
+          }
           setExitCode(1);
         }
       }

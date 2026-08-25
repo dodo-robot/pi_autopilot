@@ -184,6 +184,94 @@ describe("GitHubAdapter", () => {
     expect(octokit.rest.issues.listForRepo).toHaveBeenCalledTimes(1);
   });
 
+  it("prefers an open issue over a closed issue with the same title", async () => {
+    // Simulates a duplicate epic scenario: a closed duplicate and the open
+    // canonical issue share a title. find-or-create callers must reuse the
+    // open one, not resurrect the closed duplicate.
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.listForRepo.mockResolvedValue({
+      data: [
+        {
+          number: 170,
+          node_id: "I_170",
+          title: "M1 — Data Ingestion & Staging",
+          body: "",
+          updated_at: "2026-08-25T07:51:05Z",
+          state: "closed",
+          html_url: "https://github.com/acme/widgets/issues/170",
+        },
+        {
+          number: 76,
+          node_id: "I_76",
+          title: "M1 — Data Ingestion & Staging",
+          body: "",
+          updated_at: "2026-08-24T21:05:24Z",
+          state: "open",
+          html_url: "https://github.com/acme/widgets/issues/76",
+        },
+      ],
+    });
+    const { github } = await makeAdapter(octokit);
+    await expect(
+      github.findIssueByTitle("M1 — Data Ingestion & Staging"),
+    ).resolves.toMatchObject({ number: 76, state: "open" });
+  });
+
+  it("keeps paging past a closed match to look for a later open match", async () => {
+    const { octokit } = makeOctokit();
+    const closedPage = Array.from({ length: 100 }, (_, index) => ({
+      number: index + 1,
+      node_id: `I_${index + 1}`,
+      title: index === 0 ? "Duplicate title" : `Other ${index}`,
+      body: "",
+      updated_at: "2026-08-18T00:00:00Z",
+      state: index === 0 ? "closed" : "open",
+      html_url: `https://github.com/acme/widgets/issues/${index + 1}`,
+    }));
+    const openPage = [
+      {
+        number: 200,
+        node_id: "I_200",
+        title: "Duplicate title",
+        body: "",
+        updated_at: "2026-08-18T00:00:00Z",
+        state: "open",
+        html_url: "https://github.com/acme/widgets/issues/200",
+      },
+    ];
+    octokit.rest.issues.listForRepo
+      .mockResolvedValueOnce({ data: closedPage })
+      .mockResolvedValueOnce({ data: openPage });
+    const { github } = await makeAdapter(octokit);
+
+    await expect(github.findIssueByTitle("Duplicate title")).resolves.toMatchObject({
+      number: 200,
+      state: "open",
+    });
+    expect(octokit.rest.issues.listForRepo).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to a closed issue when no open issue matches the title", async () => {
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.listForRepo.mockResolvedValue({
+      data: [
+        {
+          number: 170,
+          node_id: "I_170",
+          title: "M1 — Data Ingestion & Staging",
+          body: "",
+          updated_at: "2026-08-25T07:51:05Z",
+          state: "closed",
+          html_url: "https://github.com/acme/widgets/issues/170",
+        },
+      ],
+    });
+    const { github } = await makeAdapter(octokit);
+    await expect(
+      github.findIssueByTitle("M1 — Data Ingestion & Staging"),
+    ).resolves.toMatchObject({ number: 170, state: "closed" });
+  });
+
   it("returns null when no issue title matches", async () => {
     const { octokit } = makeOctokit();
     octokit.rest.issues.listForRepo.mockResolvedValue({ data: [] });

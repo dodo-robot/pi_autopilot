@@ -25,15 +25,25 @@ export interface ApplyServiceDeps {
   stdout?: (msg: string) => void;
   /** Prompt for yes/no; returns true for yes. Injected for tests. */
   prompt?: (msg: string) => Promise<boolean>;
+  /** Delay awaited after each issue creation, in ms. Default: 1000. */
+  createDelayMs?: number;
+  /** Sleep function, injected for tests. Default: real setTimeout. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+const DEFAULT_CREATE_DELAY_MS = 1_000;
 
 export class ApplyService {
   private readonly log: (msg: string) => void;
   private readonly prompt: (msg: string) => Promise<boolean>;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly createDelayMs: number;
 
   constructor(private readonly deps: ApplyServiceDeps) {
     this.log = deps.stdout ?? ((msg) => process.stdout.write(`${msg}\n`));
     this.prompt = deps.prompt ?? defaultPrompt;
+    this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.createDelayMs = deps.createDelayMs ?? DEFAULT_CREATE_DELAY_MS;
   }
 
   async apply(planId: string): Promise<void> {
@@ -52,10 +62,24 @@ export class ApplyService {
     await this.deps.github.ensureLabel("epic", "0075ca");
     await this.deps.github.ensureLabel("task", "e4e669");
 
-    // Step 3: create epic issues (idempotent: skip if already done)
+    // Step 3: create epic issues (idempotent: skip if already done, and skip
+    // any epic already created on a prior attempt so a crash mid-loop can't
+    // duplicate issues on retry). Also checks GitHub by title first: a
+    // *different* plan (e.g. a separate requirements batch) may have already
+    // created an issue with the same epic title, and we must reuse it rather
+    // than create a duplicate.
     if (!state.epicsCreated) {
       this.log("→ creating epic issues...");
       for (const epic of plan.epics) {
+        if (epic.githubNumber !== undefined) continue;
+        const existing = await this.deps.github.findIssueByTitle(epic.title);
+        if (existing !== null) {
+          epic.githubNumber = existing.number;
+          epic.githubNodeId = existing.nodeId;
+          this.log(`  ✓ epic #${existing.number}: ${epic.title} (already existed)`);
+          await this.deps.planStore.update(plan);
+          continue;
+        }
         const issue = await this.deps.github.createIssue({
           title: epic.title,
           body: `${epic.description}\n\n## Tasks\n_(child issues will be linked below)_`,
@@ -64,16 +88,31 @@ export class ApplyService {
         epic.githubNumber = issue.number;
         epic.githubNodeId = issue.nodeId;
         this.log(`  ✓ epic #${issue.number}: ${epic.title}`);
+        await this.deps.planStore.update(plan);
+        await this.sleep(this.createDelayMs);
       }
       state.epicsCreated = true;
       await this.deps.planStore.update(plan);
     }
 
-    // Step 4: create child issues
+    // Step 4: create child issues (same crash-safe skip + persist pattern as
+    // Step 3 — GitHub's secondary rate limits can trip mid-loop on large
+    // plans, and losing progress here would recreate dozens of issues).
+    // Same find-by-title-first check as Step 3, for the same reason.
     if (!state.issuesCreated) {
       this.log("→ creating child issues...");
       for (const epic of plan.epics) {
         for (const issue of epic.issues) {
+          if (issue.githubNumber !== undefined) continue;
+          const existing = await this.deps.github.findIssueByTitle(issue.title);
+          if (existing !== null) {
+            issue.githubNumber = existing.number;
+            issue.githubNodeId = existing.nodeId;
+            issue.githubId = existing.id;
+            this.log(`  ✓ issue #${existing.number}: ${issue.title} (already existed)`);
+            await this.deps.planStore.update(plan);
+            continue;
+          }
           const refSection = issue.requirementRef
             ? `\n\n## Requirements\nSource: \`${issue.requirementRef.doc}\` — ${issue.requirementRef.section}`
             : "";
@@ -84,10 +123,43 @@ export class ApplyService {
           });
           issue.githubNumber = created.number;
           issue.githubNodeId = created.nodeId;
+          issue.githubId = created.id;
           this.log(`  ✓ issue #${created.number}: ${issue.title}`);
+          await this.deps.planStore.update(plan);
+          await this.sleep(this.createDelayMs);
         }
       }
       state.issuesCreated = true;
+      await this.deps.planStore.update(plan);
+    }
+
+    // Step 4.5: link each child issue as a real GitHub sub-issue of its epic,
+    // so the board/issue UI shows a parent/child hierarchy instead of a flat
+    // list. Crash-safe: re-linking an already-linked pair is a no-op on
+    // GitHub's side, but we still skip+persist per item to avoid redundant
+    // calls on retry.
+    if (!state.subIssuesLinked) {
+      this.log("→ linking sub-issues to epics...");
+      for (const epic of plan.epics) {
+        if (epic.githubNumber === undefined) continue;
+        for (const issue of epic.issues) {
+          if (issue.subIssueLinked === true) continue;
+          if (issue.githubId === undefined) {
+            // Plans applied before githubId was tracked have the issue on
+            // GitHub but never captured its database id locally; look it up.
+            if (issue.githubNumber === undefined) continue;
+            const fetched = await this.deps.github.getIssue(issue.githubNumber);
+            issue.githubId = fetched.id;
+            await this.deps.planStore.update(plan);
+          }
+          await this.deps.github.addSubIssue(epic.githubNumber, issue.githubId);
+          issue.subIssueLinked = true;
+          this.log(`  ✓ #${issue.githubNumber} linked under epic #${epic.githubNumber}`);
+          await this.deps.planStore.update(plan);
+          await this.sleep(this.createDelayMs);
+        }
+      }
+      state.subIssuesLinked = true;
       await this.deps.planStore.update(plan);
     }
 

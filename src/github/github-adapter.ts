@@ -13,6 +13,8 @@ export class GitHubError extends Error {
 }
 
 export interface GitHubIssue {
+  /** Numeric database id, distinct from `number`. Required by the sub-issues API. */
+  id: number;
   number: number;
   nodeId: string;
   title: string;
@@ -67,12 +69,15 @@ export interface GitHubPort {
   ensureLabel(name: string, color: string): Promise<void>;
   listLabels(number: number): Promise<string[]>;
   addLabel(number: number, name: string): Promise<void>;
+  /** Link an existing issue as a GitHub sub-issue of a parent issue. */
+  addSubIssue(parentNumber: number, subIssueId: number): Promise<void>;
   removeLabel(number: number, name: string): Promise<void>;
   closeIssue(number: number): Promise<void>;
 }
 
 /** Minimal structural surface of Octokit used by the adapter. */
 export interface OctokitIssueData {
+  id: number;
   number: number;
   node_id: string;
   title: string;
@@ -165,6 +170,12 @@ export interface OctokitLike {
         issue_number: number;
         name: string;
       }): Promise<{ data: unknown }>;
+      addSubIssue(params: {
+        owner: string;
+        repo: string;
+        issue_number: number;
+        sub_issue_id: number;
+      }): Promise<{ data: unknown }>;
     };
     pulls: {
       list(params: {
@@ -199,6 +210,7 @@ const PAGE_SIZE = 100;
 
 function mapIssue(data: OctokitIssueData): GitHubIssue {
   return {
+    id: data.id,
     number: data.number,
     nodeId: data.node_id,
     title: data.title,
@@ -252,8 +264,10 @@ export class GitHubAdapter implements GitHubPort {
         auth: token,
         // Pin the REST API version: GitHub deprecated the unversioned API and
         // returns a deprecation warning (and, from 2028, will reject it).
+        // Kept in sync with the latest version GitHub publishes; verify no
+        // breaking changes affect our usage before bumping further.
         request: {
-          headers: { "X-GitHub-Api-Version": "2022-11-28" },
+          headers: { "X-GitHub-Api-Version": "2026-03-10" },
         },
       });
     }
@@ -278,6 +292,7 @@ export class GitHubAdapter implements GitHubPort {
     const desired = normalizeIssueTitle(title);
     try {
       let page = 1;
+      let closedMatch: OctokitIssueData | undefined;
       for (;;) {
         const { data } = await this.octokit.rest.issues.listForRepo({
           owner: this.owner,
@@ -286,13 +301,18 @@ export class GitHubAdapter implements GitHubPort {
           per_page: PAGE_SIZE,
           page,
         });
-        const match = data.find(
+        const matches = data.filter(
           (issue) =>
             issue.pull_request === undefined &&
             normalizeIssueTitle(issue.title) === desired,
         );
-        if (match !== undefined) return mapIssue(match);
-        if (data.length < PAGE_SIZE) return null;
+        // Prefer an open issue: a closed issue with the same title is more
+        // likely a resolved duplicate than the canonical one callers should
+        // reuse (e.g. bootstrap epics deduplicated across separate plans).
+        const openMatch = matches.find((issue) => issue.state === "open");
+        if (openMatch !== undefined) return mapIssue(openMatch);
+        closedMatch ??= matches[0];
+        if (data.length < PAGE_SIZE) return closedMatch !== undefined ? mapIssue(closedMatch) : null;
         page += 1;
       }
     } catch (error) {
@@ -498,6 +518,22 @@ export class GitHubAdapter implements GitHubPort {
       const status = (error as { status?: number }).status;
       if (status === 404) return;
       throw new GitHubError(`failed to remove label "${name}" from issue #${number}`, { cause: error });
+    }
+  }
+
+  async addSubIssue(parentNumber: number, subIssueId: number): Promise<void> {
+    try {
+      await this.octokit.rest.issues.addSubIssue({
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: parentNumber,
+        sub_issue_id: subIssueId,
+      });
+    } catch (error) {
+      throw new GitHubError(
+        `failed to add sub-issue ${subIssueId} to #${parentNumber}`,
+        { cause: error },
+      );
     }
   }
 

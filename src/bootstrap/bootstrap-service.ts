@@ -190,6 +190,7 @@ export class BootstrapService {
       applyState: {
         epicsCreated: false,
         issuesCreated: false,
+        subIssuesLinked: false,
         checklistsPatched: false,
         addedToBoard: false,
         configWritten: false,

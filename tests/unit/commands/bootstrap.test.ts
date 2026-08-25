@@ -116,6 +116,23 @@ describe("bootstrap command registration", () => {
     expect(exitCode).toBe(1);
   });
 
+  it("surfaces error.cause detail for generic wrapped errors", async () => {
+    const errors: string[] = [];
+    const deps: BootstrapCommandDeps = {
+      planFn: async () => {
+        throw new Error("failed to list boards for Smityx", {
+          cause: new Error("HttpError: Bad credentials"),
+        });
+      },
+      setExitCode: () => {},
+      stdout: () => {},
+      stderr: (msg) => errors.push(msg),
+    };
+    const program = makeProgram(deps);
+    await program.parseAsync(["bootstrap", "--plan"], { from: "user" });
+    expect(errors.join(" ")).toMatch(/Bad credentials/);
+  });
+
   it("outputs plan ID and next steps", async () => {
     const output: string[] = [];
     const deps: BootstrapCommandDeps = {

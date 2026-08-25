@@ -9,6 +9,13 @@ export const BootstrapIssueSchema = z.object({
   githubNumber: z.number().int().positive().optional(),
   /** Filled in by apply-service after GitHub issue creation. */
   githubNodeId: z.string().optional(),
+  /**
+   * Filled in by apply-service after GitHub issue creation. The numeric
+   * database id (distinct from githubNumber), required by the sub-issues API.
+   */
+  githubId: z.number().int().positive().optional(),
+  /** Set by apply-service once this issue has been linked as a GitHub sub-issue of its epic. */
+  subIssueLinked: z.boolean().optional(),
 });
 export type BootstrapIssue = z.infer<typeof BootstrapIssueSchema>;
 
@@ -42,6 +49,7 @@ export const ApplyStateSchema = z.object({
   boardTitle: z.string().optional(),
   epicsCreated: z.boolean().default(false),
   issuesCreated: z.boolean().default(false),
+  subIssuesLinked: z.boolean().default(false),
   checklistsPatched: z.boolean().default(false),
   addedToBoard: z.boolean().default(false),
   configWritten: z.boolean().default(false),
@@ -63,6 +71,7 @@ export const BootstrapPlanSchema = z.object({
   applyState: ApplyStateSchema.default({
     epicsCreated: false,
     issuesCreated: false,
+    subIssuesLinked: false,
     checklistsPatched: false,
     addedToBoard: false,
     configWritten: false,
