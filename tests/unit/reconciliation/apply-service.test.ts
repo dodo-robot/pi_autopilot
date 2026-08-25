@@ -526,7 +526,7 @@ describe("ApplyService.apply", () => {
           issue: null,
           ambiguityType: "MISSING_CONTEXT",
           reason: "unclear",
-          questions: ["which epic?"],
+          questions: [{ question: "which epic?", recommendation: "epic #12" }],
           policy: "requires-approval",
         },
       ]),
@@ -539,6 +539,37 @@ describe("ApplyService.apply", () => {
       { status: "skipped", skippedBy: "requires-approval" },
     ]);
     expect(github.updated).toHaveLength(0);
+  });
+
+  it("hard-skips NEEDS_HUMAN under --yes without prompting or posting a comment", async () => {
+    // --yes means unattended: there's no one to answer the questions, so
+    // NEEDS_HUMAN is skipped exactly like any other requires-approval patch
+    // rather than silently auto-accepting every recommendation.
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "NEEDS_HUMAN",
+          issue: 336,
+          ambiguityType: "CONFLICTING_REQUIREMENTS",
+          reason: "spec has two contradictory AC blocks",
+          questions: [
+            {
+              question: "Does Beta cover SP+CE only, or all 5 schemas?",
+              recommendation: "SP+CE only",
+            },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    const result = await service().apply(analysisId, opts);
+
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "requires-approval" });
+    expect(result.entries[0]?.detail).toBe("spec has two contradictory AC blocks");
+    expect(github.comments).toHaveLength(0);
   });
 
   it("offers REMOVE_DEPENDENCY interactively and removes the managed dependency line on apply", async () => {
@@ -1079,6 +1110,128 @@ describe("ApplyService.apply", () => {
     expect(github.comments).toEqual([{ number: 123, body: "Duplicate of #120." }]);
     expect(result.entries[0]?.outcome.status).toBe("failed");
     expect(result.entries[0]?.appliedIssueNumber).toBeUndefined();
+  });
+
+  it("offers NEEDS_HUMAN interactively, posts a comment with every answer, and never auto-applies under --yes", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(336, makeIssue(336, "Anteprima HTML schemi ITAS 1", "..."));
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "NEEDS_HUMAN",
+          issue: 336,
+          ambiguityType: "CONFLICTING_REQUIREMENTS",
+          reason: "spec has two contradictory AC blocks",
+          questions: [
+            {
+              question: "Does Beta cover SP+CE only, or all 5 schemas?",
+              recommendation: "SP+CE only, per the Descrizione paragraph",
+            },
+            {
+              question: "Should the other 3 schemas show as placeholders?",
+              recommendation: "Show as greyed-out placeholders",
+            },
+          ],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    // First question: blank input accepts the recommendation. Second
+    // question: an explicit override.
+    const asked: Array<{ question: string; recommendation: string }> = [];
+    const result = await service({
+      askQuestion: async (question, recommendation) => {
+        asked.push({ question, recommendation });
+        if (asked.length === 1) return { answer: recommendation, accepted: true };
+        return { answer: "Just hide them entirely", accepted: false };
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(asked).toEqual([
+      {
+        question: "Does Beta cover SP+CE only, or all 5 schemas?",
+        recommendation: "SP+CE only, per the Descrizione paragraph",
+      },
+      {
+        question: "Should the other 3 schemas show as placeholders?",
+        recommendation: "Show as greyed-out placeholders",
+      },
+    ]);
+    expect(github.comments).toHaveLength(1);
+    expect(github.comments[0]?.number).toBe(336);
+    expect(github.comments[0]?.body).toContain("Does Beta cover SP+CE only, or all 5 schemas?");
+    expect(github.comments[0]?.body).toContain("SP+CE only, per the Descrizione paragraph (recommendation accepted)");
+    expect(github.comments[0]?.body).toContain("Should the other 3 schemas show as placeholders?");
+    expect(github.comments[0]?.body).toContain("Just hide them entirely (override)");
+    expect(result.entries[0]?.outcome).toEqual({ status: "applied" });
+    expect(result.entries[0]?.appliedIssueNumber).toBe(336);
+  });
+
+  it("never auto-applies NEEDS_HUMAN under --yes even though it is offerable, and posts no comment", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(336, makeIssue(336, "Anteprima HTML schemi ITAS 1", "..."));
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "NEEDS_HUMAN",
+          issue: 336,
+          ambiguityType: "CONFLICTING_REQUIREMENTS",
+          reason: "spec has two contradictory AC blocks",
+          questions: [{ question: "Q?", recommendation: "R" }],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    let askedCount = 0;
+    const result = await service({
+      askQuestion: async () => {
+        askedCount += 1;
+        return { answer: "R", accepted: true };
+      },
+    }).apply(analysisId, { yes: true });
+
+    expect(askedCount).toBe(0);
+    expect(github.comments).toHaveLength(0);
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "requires-approval" });
+  });
+
+  it("skips NEEDS_HUMAN with issue: null as requires-approval even when interactive, since there is no comment target", async () => {
+    github.issues.set(12, epic());
+
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "NEEDS_HUMAN",
+          issue: null,
+          ambiguityType: "MISSING_CONTEXT",
+          reason: "epic #12 references issue #99, which could not be fetched",
+          questions: [{ question: "Does #99 still exist?", recommendation: "Remove the reference" }],
+          policy: "requires-approval",
+        },
+      ]),
+    );
+
+    let askedCount = 0;
+    const result = await service({
+      askQuestion: async () => {
+        askedCount += 1;
+        return { answer: "R", accepted: true };
+      },
+    }).apply(analysisId, { yes: false });
+
+    expect(askedCount).toBe(0);
+    expect(github.comments).toHaveLength(0);
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "requires-approval" });
   });
 
   it("enforces the report staleness guard unless force is set", async () => {

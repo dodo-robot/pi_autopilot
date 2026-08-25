@@ -131,7 +131,10 @@ export class ReconciliationService {
       ambiguityType: "MISSING_CONTEXT",
       reason: `epic #${epicRef} references issue #${ref}, which could not be fetched`,
       questions: [
-        `Does issue #${ref} still exist? Update or remove it from epic #${epicRef}'s checklist.`,
+        {
+          question: `Does issue #${ref} still exist? Update or remove it from epic #${epicRef}'s checklist.`,
+          recommendation: `Remove the reference to #${ref} from epic #${epicRef}'s checklist — a fetch failure usually means the issue was deleted or the repository changed.`,
+        },
       ],
     }));
 
@@ -141,7 +144,10 @@ export class ReconciliationService {
       ambiguityType: "MISSING_CONTEXT",
       reason: `epic #${epicRef}'s checklist line ${lineNumber} has no issue reference`,
       questions: [
-        `Line ${lineNumber} of epic #${epicRef}'s checklist doesn't reference a GitHub issue — does it need one created, or should the line be removed/clarified?`,
+        {
+          question: `Line ${lineNumber} of epic #${epicRef}'s checklist doesn't reference a GitHub issue — does it need one created, or should the line be removed/clarified?`,
+          recommendation: `Review line ${lineNumber} manually and either create the missing issue and link it, or remove/clarify the line if it's stale.`,
+        },
       ],
     }));
 

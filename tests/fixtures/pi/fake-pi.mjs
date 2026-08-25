@@ -133,7 +133,12 @@ const VALID_PAYLOADS = {
         issue: null,
         ambiguityType: "PRODUCT",
         reason: "unclear whether the legacy password flow should be deleted or archived",
-        questions: ["Should the legacy password login code be deleted or kept archived?"],
+        questions: [
+          {
+            question: "Should the legacy password login code be deleted or kept archived?",
+            recommendation: "Delete it — the SSO gateway rollout already superseded it.",
+          },
+        ],
       },
       {
         type: "CREATE_ISSUE",

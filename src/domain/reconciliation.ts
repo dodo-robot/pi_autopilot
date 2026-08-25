@@ -124,7 +124,20 @@ export const BacklogPatchSchema = z.discriminatedUnion("type", [
     issue: z.number().int().positive().nullable(),
     ambiguityType: ReconciliationAmbiguityTypeSchema,
     reason: z.string().min(1),
-    questions: z.array(z.string()).min(1),
+    /**
+     * Every question carries the reconciler's own best-guess recommendation.
+     * reconcile-apply offers it as the interactive default (Enter accepts
+     * it) rather than silently skipping the question — there is no
+     * unanswered state.
+     */
+    questions: z
+      .array(
+        z.object({
+          question: z.string().min(1),
+          recommendation: z.string().min(1),
+        }),
+      )
+      .min(1),
   }),
 ]);
 export type BacklogPatch = z.infer<typeof BacklogPatchSchema>;

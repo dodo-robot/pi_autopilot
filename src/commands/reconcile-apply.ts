@@ -156,7 +156,10 @@ function printApplySummary(report: ApplyReport, stdout: (text: string) => void):
     } else if (entry.outcome.status === "failed") {
       stdout(`  ✗ ${target}${entry.detail} (${entry.outcome.error})`);
     } else {
-      stdout(`  → ${target}skipped (${entry.outcome.skippedBy})`);
+      // detail carries useful context for every skip reason (e.g. NEEDS_HUMAN's
+      // questions, which are never surfaced any other way — that patch type has
+      // no write action to confirm interactively).
+      stdout(`  → ${target}skipped (${entry.outcome.skippedBy}): ${entry.detail}`);
     }
   }
 }

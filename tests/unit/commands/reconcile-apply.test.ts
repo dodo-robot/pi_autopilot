@@ -317,7 +317,7 @@ const APPLY_SAFE_REPORT: ReconciliationReport = {
       issue: 18,
       ambiguityType: "PRODUCT",
       reason: "ambiguous product choice",
-      questions: ["Which behavior should win?"],
+      questions: [{ question: "Which behavior should win?", recommendation: "Option A" }],
       policy: "requires-approval",
     },
     {
@@ -451,6 +451,33 @@ describe("autopilot reconcile-apply", () => {
     expect(output).toContain("[REDACTED]");
   });
 
+  it("prints a skipped entry's detail in human output, so NEEDS_HUMAN questions are visible", async () => {
+    // NEEDS_HUMAN is never offered interactively (no write action to
+    // confirm), so its questions are only reachable through this printed
+    // detail — skippedBy alone ("requires-approval") gives no hint what the
+    // ambiguity actually is.
+    const report: ApplyReport = {
+      ...APPLIED,
+      entries: [
+        {
+          patchType: "NEEDS_HUMAN",
+          targetIssue: 336,
+          policy: "requires-approval",
+          detail: "spec has two contradictory AC blocks\n    questions:\n      - Does Beta cover SP+CE only, or all 5 schemas?",
+          outcome: { status: "skipped", skippedBy: "requires-approval" },
+        },
+      ],
+      summary: { ...APPLIED.summary, skippedRequiresApproval: 1 },
+    };
+    const cmd = makeCommand({ report });
+
+    await run(cmd.program, ["reconcile-1-12", "--yes"]);
+
+    const output = cmd.stdout.join("\n");
+    expect(output).toContain("spec has two contradictory AC blocks");
+    expect(output).toContain("Does Beta cover SP+CE only, or all 5 schemas?");
+  });
+
   it("applies only auto-safe patches with --yes and writes nothing in non-TTY preview-only mode", async () => {
     const yesGithub = new RecordingGitHub([
       makeIssue(15, "Existing task", "Needs enrichment"),
@@ -502,16 +529,20 @@ describe("autopilot reconcile-apply", () => {
     expect(previewGithub.writes).toEqual([]);
     expect(previewReport.summary).toMatchObject({
       applied: 0,
-      skippedRequiresApproval: 2,
+      // Only MARK_STALE is hard-skipped before ever reaching a preview —
+      // NEEDS_HUMAN (issue: 18, non-null) is now offerable, so preview-only
+      // mode shows its questions/recommendations like any other write
+      // instead of hard-skipping it.
+      skippedRequiresApproval: 1,
       skippedUser: 0,
       failed: 0,
-      previewed: 3,
+      previewed: 4,
     });
     expect(
       previewReport.entries.filter(
         (entry) => entry.outcome.status === "skipped" && entry.outcome.skippedBy === "preview-only",
       ),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
   it("exits 2 when an auto-safe target issue cannot be fetched", async () => {

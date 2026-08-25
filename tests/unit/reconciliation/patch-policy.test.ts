@@ -68,7 +68,7 @@ const cases: Array<{ patch: BacklogPatch; policy: "auto-safe" | "requires-approv
       issue: 1,
       ambiguityType: "PRODUCT",
       reason: "unclear",
-      questions: ["?"],
+      questions: [{ question: "?", recommendation: "?" }],
     },
     policy: "requires-approval",
   },

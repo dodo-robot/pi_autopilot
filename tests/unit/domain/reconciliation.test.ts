@@ -268,7 +268,12 @@ describe("BacklogPatchSchema", () => {
       issue: null,
       ambiguityType: "CONFLICTING_REQUIREMENTS",
       reason: "REQ-AUTH-002 and REQ-AUTH-011 disagree on session length",
-      questions: ["Should sessions expire after 24h (REQ-AUTH-002) or 7d (REQ-AUTH-011)?"],
+      questions: [
+        {
+          question: "Should sessions expire after 24h (REQ-AUTH-002) or 7d (REQ-AUTH-011)?",
+          recommendation: "24h, per REQ-AUTH-002 — the more recent document",
+        },
+      ],
     });
     expect(withQuestion.success).toBe(true);
 
@@ -280,6 +285,31 @@ describe("BacklogPatchSchema", () => {
       questions: [],
     });
     expect(withoutQuestions.success).toBe(false);
+  });
+
+  it("rejects a NEEDS_HUMAN question missing a recommendation", () => {
+    const result = BacklogPatchSchema.safeParse({
+      type: "NEEDS_HUMAN",
+      issue: null,
+      ambiguityType: "PRODUCT",
+      reason: "ambiguous",
+      questions: [{ question: "Which behavior wins?" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects the old plain-string NEEDS_HUMAN questions shape", () => {
+    // Regression guard: questions must always carry a recommendation now, so
+    // reconcile-apply can offer "accept the recommendation" as the default
+    // instead of a silent skip. A bare string list is no longer valid.
+    const result = BacklogPatchSchema.safeParse({
+      type: "NEEDS_HUMAN",
+      issue: null,
+      ambiguityType: "PRODUCT",
+      reason: "ambiguous",
+      questions: ["Which behavior wins?"],
+    });
+    expect(result.success).toBe(false);
   });
 
   it("rejects an unknown patch type", () => {

@@ -59,7 +59,10 @@ export function applyIdempotencyDowngrades(
             ambiguityType: "MISSING_CONTEXT",
             reason: `issue #${patch.issue}'s body has ambiguous managed-section markers, so the proposed enrichment cannot be safely evaluated: ${error.message}`,
             questions: [
-              `Issue #${patch.issue}'s body has duplicate or unbalanced autopilot managed-section markers — please clean it up manually before this enrichment can be evaluated.`,
+              {
+                question: `Issue #${patch.issue}'s body has duplicate or unbalanced autopilot managed-section markers — how should it be cleaned up?`,
+                recommendation: "Manually remove the duplicate/unbalanced markers so the body has exactly one well-formed managed section, then re-run reconcile.",
+              },
             ],
           };
         }

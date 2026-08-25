@@ -10,14 +10,17 @@ import {
   removeManagedDependencyFromBody,
 } from "./apply-dependency.js";
 import {
+  askQuestion,
   confirmMenu,
   renderCreatePreview,
   renderDependencyPreview,
   renderEnrichPreview,
   renderMergeDuplicatePreview,
+  renderNeedsHumanPreview,
   renderRemoveDependencyPreview,
   renderSplitPreview,
   type MenuAnswer,
+  type QuestionAnswer,
 } from "./apply-preview.js";
 import { renderReconciliationSection, upsertReconciliationSection } from "./managed-section.js";
 import { splitAlreadyApplied, upsertSplitSection } from "./managed-split-section.js";
@@ -32,14 +35,17 @@ const DEFAULT_STALE_HOURS = 168;
 
 /**
  * requires-approval patch types still offerable through the interactive
- * confirm menu (never under --yes or a prior "all" answer). Every other
- * requires-approval type (MARK_STALE, NEEDS_HUMAN) is hard-skipped before
- * prepare() ever runs.
+ * confirm menu (never under --yes or a prior "all" answer). NEEDS_HUMAN is
+ * also offerable but through its own per-question prompt, not this menu —
+ * see the `patch.type === "NEEDS_HUMAN"` branch in apply(). Every other
+ * requires-approval type (MARK_STALE) is hard-skipped before prepare() ever
+ * runs.
  */
 const OFFERABLE_REQUIRES_APPROVAL: ReadonlySet<BacklogPatchType> = new Set([
   "REMOVE_DEPENDENCY",
   "SPLIT_ISSUE",
   "MERGE_DUPLICATE",
+  "NEEDS_HUMAN",
 ]);
 
 export interface ApplyOptions {
@@ -59,6 +65,8 @@ export interface ApplyServiceDeps {
   reportStaleAfterHours?: number | null;
   /** Interactive menu. Only consulted when opts.yes and opts.previewOnly are false. */
   confirmMenu?: (prompt: string) => Promise<MenuAnswer>;
+  /** Interactive NEEDS_HUMAN question prompt. Only consulted when opts.yes and opts.previewOnly are false. */
+  askQuestion?: (question: string, recommendation: string) => Promise<QuestionAnswer>;
   /** Receives rendered preview text before a patch is offered or previewed. */
   onPreview?: (text: string) => void;
   now?: () => string;
@@ -92,11 +100,13 @@ interface ExistingIssueMatch {
 export class ApplyService {
   private readonly now: () => string;
   private readonly confirm: (prompt: string) => Promise<MenuAnswer>;
+  private readonly askQuestion: (question: string, recommendation: string) => Promise<QuestionAnswer>;
   private readonly onPreview: (text: string) => void;
 
   constructor(private readonly deps: ApplyServiceDeps) {
     this.now = deps.now ?? (() => new Date().toISOString());
     this.confirm = deps.confirmMenu ?? ((prompt: string) => confirmMenu(prompt));
+    this.askQuestion = deps.askQuestion ?? ((question, recommendation) => askQuestion(question, recommendation));
     this.onPreview = deps.onPreview ?? (() => {});
   }
 
@@ -160,6 +170,14 @@ export class ApplyService {
         recordEntry(entries, summary, skipEntry(prepared.patch, "requires-approval"));
         continue;
       } else if (opts.yes || (allRemaining && prepared.patch.policy === "auto-safe")) {
+        decision = "apply";
+      } else if (prepared.patch.type === "NEEDS_HUMAN") {
+        // No accept/reject decision here: every question always gets an
+        // answer (typed override or accepted recommendation), so there's
+        // nothing for the generic [y/n/a/q] menu to ask. The actual
+        // per-question prompting happens inside applyFresh() below.
+        this.onPreview(prepared.previewText);
+        summary.previewed += 1;
         decision = "apply";
       } else {
         this.onPreview(prepared.previewText);
@@ -234,9 +252,10 @@ export class ApplyService {
         return this.prepareSplit(patch, epicRef);
       case "MERGE_DUPLICATE":
         return this.prepareMergeDuplicate(patch);
+      case "NEEDS_HUMAN":
+        return this.prepareNeedsHuman(patch);
       case "KEEP":
       case "MARK_STALE":
-      case "NEEDS_HUMAN":
         return { kind: "skip", entry: skipEntry(patch, "requires-approval") };
     }
   }
@@ -413,6 +432,54 @@ export class ApplyService {
       ...entryBase(patch, `split #${patch.issue} into ${childRefs.length} issues`),
       outcome: { status: "applied" },
       appliedIssueNumbers: childRefs.map((ref) => ref.number),
+    };
+  }
+
+  private prepareNeedsHuman(
+    patch: Extract<ReconciledPatch, { type: "NEEDS_HUMAN" }>,
+  ): Prepared {
+    // No GitHub write target: there's nowhere to post the answers, so this
+    // stays a hard skip exactly like MARK_STALE/KEEP — same as before this
+    // patch type became otherwise offerable.
+    if (patch.issue === null) {
+      return { kind: "skip", entry: skipEntry(patch, "requires-approval") };
+    }
+
+    return {
+      kind: "write",
+      patch,
+      entryBase: entryBase(patch, `answer ${patch.questions.length} question(s) on #${patch.issue}`),
+      previewText: renderNeedsHumanPreview(patch),
+      applyFresh: () => this.applyNeedsHumanFresh(patch, patch.issue!),
+    };
+  }
+
+  private async applyNeedsHumanFresh(
+    patch: Extract<ReconciledPatch, { type: "NEEDS_HUMAN" }>,
+    issue: number,
+  ): Promise<ApplyEntry> {
+    const answers: Array<{ question: string; answer: string; accepted: boolean }> = [];
+    for (const q of patch.questions) {
+      const result = await this.askQuestion(q.question, q.recommendation);
+      answers.push({ question: q.question, answer: result.answer, accepted: result.accepted });
+    }
+
+    const body = [
+      "**Reconciliation NEEDS_HUMAN answered**",
+      "",
+      ...answers.flatMap((a) => [
+        `Q: ${a.question}`,
+        `A: ${a.answer}${a.accepted ? " (recommendation accepted)" : " (override)"}`,
+        "",
+      ]),
+    ].join("\n").trimEnd();
+
+    await this.deps.github.createIssueComment(issue, body);
+
+    return {
+      ...entryBase(patch, `posted ${answers.length} answer(s) to #${issue}`),
+      outcome: { status: "applied" },
+      appliedIssueNumber: issue,
     };
   }
 

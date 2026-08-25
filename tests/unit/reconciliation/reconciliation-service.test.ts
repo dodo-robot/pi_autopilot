@@ -237,7 +237,10 @@ describe("ReconciliationService.reconcile", () => {
             reason:
               "issue #16 bundles three independent outcomes (create user, link identity, send welcome email) into one issue",
             questions: [
-              "Should this be split into three issues, or is bundling them intentional?",
+              {
+                question: "Should this be split into three issues, or is bundling them intentional?",
+                recommendation: "Split into three issues — each outcome is independently testable and shippable.",
+              },
             ],
           },
         ],

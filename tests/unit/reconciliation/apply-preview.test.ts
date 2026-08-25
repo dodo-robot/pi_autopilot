@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { upsertReconciliationSection } from "../../../src/reconciliation/managed-section.js";
 import {
+  askQuestion,
   confirmMenu,
   renderEnrichPreview,
   renderDependencyPreview,
@@ -8,7 +9,41 @@ import {
   renderCreatePreview,
   renderSplitPreview,
   renderMergeDuplicatePreview,
+  renderNeedsHumanPreview,
 } from "../../../src/reconciliation/apply-preview.js";
+
+describe("askQuestion", () => {
+  it("accepts the recommendation when the answer is blank", async () => {
+    const writes: string[] = [];
+    const write = (s: string): void => { writes.push(s); };
+    const read = (): Promise<string> => Promise.resolve("");
+    const result = await askQuestion(
+      "Does Beta cover SP+CE only, or all 5 schemas?",
+      "SP+CE only, per the Descrizione paragraph",
+      write,
+      read,
+    );
+    expect(result).toEqual({
+      answer: "SP+CE only, per the Descrizione paragraph",
+      accepted: true,
+    });
+    // The question and the recommendation must both be shown before reading.
+    expect(writes.join("")).toContain("Does Beta cover SP+CE only, or all 5 schemas?");
+    expect(writes.join("")).toContain("SP+CE only, per the Descrizione paragraph");
+  });
+
+  it("uses the typed answer as an override when non-blank", async () => {
+    const read = (): Promise<string> => Promise.resolve("Just hide them entirely");
+    const result = await askQuestion("Should the other 3 schemas show as placeholders?", "Show as greyed-out placeholders", () => {}, read);
+    expect(result).toEqual({ answer: "Just hide them entirely", accepted: false });
+  });
+
+  it("trims whitespace-only input and treats it as blank (accepts recommendation)", async () => {
+    const read = (): Promise<string> => Promise.resolve("   \n");
+    const result = await askQuestion("Q?", "the recommendation", () => {}, read);
+    expect(result).toEqual({ answer: "the recommendation", accepted: true });
+  });
+});
 
 describe("confirmMenu", () => {
   it("maps y to apply, n to skip, a to all, q to abort", async () => {
@@ -218,6 +253,26 @@ describe("confirmMenu", () => {
       expect(preview).toContain("#120");
       expect(preview).toContain("#123");
       expect(preview).toContain("close");
+    });
+  });
+
+  describe("renderNeedsHumanPreview", () => {
+    it("lists every question and its recommendation", () => {
+      const preview = renderNeedsHumanPreview({
+        type: "NEEDS_HUMAN",
+        issue: 336,
+        ambiguityType: "CONFLICTING_REQUIREMENTS",
+        reason: "spec has two contradictory AC blocks",
+        questions: [
+          { question: "Does Beta cover SP+CE only, or all 5 schemas?", recommendation: "SP+CE only" },
+          { question: "Should the other 3 schemas show as placeholders?", recommendation: "Yes, greyed out" },
+        ],
+        policy: "requires-approval",
+      });
+      expect(preview).toContain("Does Beta cover SP+CE only, or all 5 schemas?");
+      expect(preview).toContain("SP+CE only");
+      expect(preview).toContain("Should the other 3 schemas show as placeholders?");
+      expect(preview).toContain("Yes, greyed out");
     });
   });
 });

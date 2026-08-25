@@ -250,6 +250,35 @@ Implementation plan: `docs/superpowers/plans/2026-08-24-m4-dependency-aware-sche
 
 ---
 
+## 2026-08-25 — `NEEDS_HUMAN` answered interactively, with a recommendation default ✅
+
+**Scope:** `NEEDS_HUMAN` was previously always hard-skipped — its questions
+were generated but never reached the operator except by reading the raw
+reconciliation report. It is now offerable through `reconcile-apply` (added
+to `OFFERABLE_REQUIRES_APPROVAL`), with its own per-question interaction
+instead of the generic `[y/n/a/q]` menu.
+
+- `BacklogPatchSchema`'s `NEEDS_HUMAN.questions` changed from `string[]` to
+  `{ question, recommendation }[]` — the reconciler prompt now requires a
+  recommendation for every question it raises. Breaking change: stored
+  reports from before this change no longer validate; re-run `reconcile`.
+- New `askQuestion` in `apply-preview.ts` prompts per question and shows the
+  recommendation as the default; blank input accepts it, any other input
+  overrides it. There is no skip state — every question always gets an
+  answer.
+- When the patch has a target issue, `ApplyService` posts one comment with
+  every Q/A pair (marking each as "(recommendation accepted)" or
+  "(override)") and records the patch as `applied`.
+- `NEEDS_HUMAN` with `issue: null` (epic/requirement-level ambiguity) still
+  hard-skips — there is no comment target to write to.
+- Never auto-applied under `--yes` (unattended has no one to answer) or a
+  prior `"all"` interactive answer — always stops for its own questions.
+- Preview-only mode (non-TTY without `--yes`) shows the questions and
+  recommendations without prompting or writing, like every other offerable
+  write.
+
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and

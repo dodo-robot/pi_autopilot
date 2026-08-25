@@ -79,7 +79,7 @@ When your analysis is complete, call the submit_result tool exactly once with a 
     { "type": "SPLIT_ISSUE", "issue": 123, "reason": "...", "children": [ { "title": "...", "enrichment": { "goal": "...", "sourceRequirements": [], "acceptanceCriteria": [], "constraints": [], "nonGoals": [], "validation": [], "relevantAreas": [] } } ] },
     { "type": "MERGE_DUPLICATE", "keep": 120, "duplicate": 123, "reason": "..." },
     { "type": "MARK_STALE", "issue": 123, "reason": "..." },
-    { "type": "NEEDS_HUMAN", "issue": 123, "ambiguityType": "ENGINEERING" | "PRODUCT" | "MISSING_CONTEXT" | "CONFLICTING_REQUIREMENTS", "reason": "...", "questions": ["..."] }
+    { "type": "NEEDS_HUMAN", "issue": 123, "ambiguityType": "ENGINEERING" | "PRODUCT" | "MISSING_CONTEXT" | "CONFLICTING_REQUIREMENTS", "reason": "...", "questions": [ { "question": "...", "recommendation": "..." } ] }
   ]
 }
 
@@ -93,6 +93,7 @@ Rules
 - Propose MERGE_DUPLICATE when two issues in this epic describe the same actual piece of work — not merely similar titles or overlapping keywords, but the same behavioral outcome such that implementing one would fully satisfy the other. Set "keep" to whichever issue has more complete or enriched content (fuller acceptance criteria, more validated context); if the two are equally complete, "keep" is the lower-numbered issue. Set "duplicate" to the other. Never propose MERGE_DUPLICATE for issues that merely depend on or relate to each other — only true duplicates.
 - ENGINEERING ambiguity (which module owns a behavior, whether an abstraction already exists) does NOT require NEEDS_HUMAN: resolve it by inspecting the repository.
 - PRODUCT ambiguity, MISSING_CONTEXT (a requirement you cannot locate enough information about), and CONFLICTING_REQUIREMENTS (two requirement documents disagree) MUST produce a NEEDS_HUMAN patch with specific questions.
+- Every NEEDS_HUMAN question MUST include a "recommendation": your own best-guess answer, stated plainly and justified from the requirement documents or repository evidence you already gathered. This is not optional and never blank — the operator applying the patch can accept your recommendation with a single keystroke instead of typing an answer, so give the recommendation you would actually pick if forced to decide. State it as a recommendation, not a decision: do not act on it yourself.
 - An issue is the right size when it has one primary outcome, fits one isolated agent session, and its acceptance criteria are independently testable. If an issue's scope spans multiple independent behavioral outcomes (not just multiple implementation steps toward one outcome), it is oversized. When the split itself is mechanical — the outcomes are clear and their relative order/priority is not a product call — propose SPLIT_ISSUE with one full IssueSpec (title + complete enrichment) per outcome. When which slice ships first, or how to divide the scope, requires a product decision, raise a NEEDS_HUMAN patch (ambiguityType "PRODUCT") naming the outcomes instead of proposing a split yourself.
 - Never silently drop a requirement or an issue from your analysis.
 

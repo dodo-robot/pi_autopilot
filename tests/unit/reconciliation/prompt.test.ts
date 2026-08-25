@@ -78,6 +78,14 @@ describe("buildReconcilerPrompt", () => {
     expect(prompt).toContain("product");
   });
 
+  it("requires a recommendation for every NEEDS_HUMAN question, in the output contract and the rules", () => {
+    const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs: [] });
+    // Output contract shape: questions is an array of {question, recommendation}.
+    expect(prompt).toContain('"question"');
+    expect(prompt).toContain('"recommendation"');
+    expect(prompt).toMatch(/every needs_human question.*recommendation/i);
+  });
+
   it("includes prior requirement IDs when a prior report is given", () => {
     const prompt = buildReconcilerPrompt({
       repository,

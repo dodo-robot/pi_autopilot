@@ -1,8 +1,44 @@
+import { createInterface } from "node:readline/promises";
 import type { ReconciledPatch } from "../domain/reconciliation.js";
 import { renderDependencyLine } from "./apply-dependency.js";
 import { renderUnifiedDiff } from "../readiness/refinement-section.js";
 
 export type MenuAnswer = "apply" | "skip" | "all" | "abort";
+
+export interface QuestionAnswer {
+  answer: string;
+  /** True when blank input accepted the recommendation as-is. */
+  accepted: boolean;
+}
+
+/**
+ * Prompt for a NEEDS_HUMAN question, offering the reconciler's own
+ * recommendation as the default. Blank input accepts the recommendation
+ * verbatim — there is no skip state; every question always gets an answer.
+ * Injected write/read for tests; default reads/writes from process stdio
+ * via readline (see confirmMenu for why a bare process.stdin listener is
+ * unsafe here).
+ */
+export async function askQuestion(
+  question: string,
+  recommendation: string,
+  write: (s: string) => void = (s) => process.stdout.write(s),
+  readLine: () => Promise<string> = async () => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      return await rl.question("");
+    } finally {
+      rl.close();
+    }
+  },
+): Promise<QuestionAnswer> {
+  write(`Q: ${question}\n`);
+  write(`Recommendation: ${recommendation}\n`);
+  write("Answer (Enter to accept the recommendation): ");
+  const raw = (await readLine()).trim();
+  if (raw === "") return { answer: recommendation, accepted: true };
+  return { answer: raw, accepted: false };
+}
 
 /** Render the diff between an issue's current body and the exact proposed body. */
 export function renderEnrichPreview(currentBody: string, proposedBody: string): string {
@@ -55,18 +91,38 @@ export function renderMergeDuplicatePreview(
   return `keep #${patch.keep}; close #${patch.duplicate} as a duplicate`;
 }
 
+/** Render every NEEDS_HUMAN question with its recommendation before prompting. */
+export function renderNeedsHumanPreview(
+  patch: Extract<ReconciledPatch, { type: "NEEDS_HUMAN" }>,
+): string {
+  return patch.questions
+    .map((q) => `- ${q.question}\n  recommendation: ${q.recommendation}`)
+    .join("\n");
+}
+
 /**
  * Prompt for one of apply / skip / all / abort. Injected write/read for
  * tests; default reads/writes from process stdio. Blank input always
  * defaults to "skip" (a stray Enter never applies).
+ *
+ * The default readLine uses readline.createInterface + close(), the same
+ * pattern as bootstrap-service.ts's defaultQuestionHandler — a bare
+ * `process.stdin.once("data", ...)` puts stdin into flowing mode and never
+ * releases it, which keeps the whole Node process alive indefinitely after
+ * the CLI command has otherwise finished (Node stdin streams don't exit the
+ * event loop on their own; see readline's own close()).
  */
 export async function confirmMenu(
   prompt: string,
   write: (s: string) => void = (s) => process.stdout.write(s),
-  readLine: () => Promise<string> = () =>
-    new Promise((resolve) => {
-      process.stdin.once("data", (data) => resolve(data.toString()));
-    }),
+  readLine: () => Promise<string> = async () => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      return await rl.question("");
+    } finally {
+      rl.close();
+    }
+  },
 ): Promise<MenuAnswer> {
   for (;;) {
     write(prompt);

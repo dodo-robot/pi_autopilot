@@ -220,7 +220,7 @@ describe("applyIdempotencyDowngrades", () => {
         issue: null,
         ambiguityType: "PRODUCT",
         reason: "unclear",
-        questions: ["?"],
+        questions: [{ question: "?", recommendation: "?" }],
       },
     ];
     const result = applyIdempotencyDowngrades(patches, []);
