@@ -128,4 +128,31 @@ describe("buildReconcilerPrompt", () => {
     expect(prompt).toContain('"keep"');
     expect(prompt).toContain('"duplicate"');
   });
+
+  it("renders an Apply steering context section when applySteering is non-empty", () => {
+    const prompt = buildReconcilerPrompt({
+      repository,
+      epic,
+      issues,
+      requirementDocs: [],
+      applySteering: [
+        { patchType: "ENRICH_ISSUE", targetIssue: 7, reason: "waiting on product decision" },
+        { patchType: "ADD_DEPENDENCY", targetIssue: 8 },
+      ],
+    });
+    expect(prompt).toContain("Apply steering context");
+    expect(prompt).toContain("ENRICH_ISSUE #7");
+    expect(prompt).toContain("waiting on product decision");
+    expect(prompt).toContain("#8");
+  });
+
+  it("omits the steering section and the rule when applySteering is empty or absent", () => {
+    for (const input of [
+      { repository, epic, issues, requirementDocs: [] },
+      { repository, epic, issues, requirementDocs: [], applySteering: [] },
+    ] as const) {
+      const prompt = buildReconcilerPrompt(input);
+      expect(prompt).not.toContain("Apply steering context");
+    }
+  });
 });

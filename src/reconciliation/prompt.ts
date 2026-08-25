@@ -1,3 +1,4 @@
+import type { DeclinedPatch } from "../domain/apply.js";
 import type { RepositoryRef } from "../domain/contracts.js";
 import type { GitHubIssue } from "../github/github-adapter.js";
 
@@ -17,6 +18,9 @@ export interface ReconcilerPromptInput {
   priorReport?: {
     coverage: Array<{ requirementId: string; description: string }>;
   };
+  /** Declined patches from a prior reconcile-apply of this epic, so the
+   * model does not re-propose patches a human already declined. */
+  applySteering?: DeclinedPatch[];
 }
 
 /**
@@ -56,6 +60,22 @@ export function buildReconcilerPrompt(input: ReconcilerPromptInput): string {
           )}\nReuse these IDs for the same requirements; only assign new IDs for requirements not listed here.`
       : "";
 
+  const applySteeringHasEntries =
+    input.applySteering !== undefined && input.applySteering.length > 0;
+
+  const applySteeringRule = applySteeringHasEntries
+    ? "\n- If the Apply steering context (below) lists a patch as declined, do not re-propose it unchanged; reconsider it, keep it, propose an alternative, or justify in its reason why circumstances changed."
+    : "";
+
+  const applySteeringSection = applySteeringHasEntries
+    ? `\n\nApply steering context\n-----------------------\nA prior reconcile-apply of this epic proposed patches that a human declined during apply. Do not re-propose a declined patch as-is; either KEEP the issue, propose a different patch, or — only if something has genuinely changed — propose the same patch again AND justify in its "reason" why the earlier decline no longer applies.\n${(input.applySteering ?? [])
+          .map(
+            (decline) =>
+              `- ${decline.patchType} #${decline.targetIssue}${decline.reason !== undefined ? `: ${decline.reason}` : ""}`,
+          )
+          .join("\n")}`
+      : "";
+
   return `You are the Reconciler role of an autonomous software development orchestrator.
 
 You are operating inside a checkout of the target repository at the current working directory. Use the read, grep, find, and ls tools to inspect the repository — confirm whether work an issue describes already exists, is partially implemented, or was superseded, before proposing a patch about it.
@@ -92,7 +112,7 @@ Rules
 - Propose REMOVE_DEPENDENCY only when a currently-recorded managed-form dependency (the "- #N (unsatisfied)" bullet, not free-text prose like "depends on #12") no longer reflects a real ordering constraint — for example, the dependency was satisfied by a rearchitecting that removed the need for it, or was recorded in error. Never propose it against a dependency you only see written as free-text human prose.
 - Propose MERGE_DUPLICATE when two issues in this epic describe the same actual piece of work — not merely similar titles or overlapping keywords, but the same behavioral outcome such that implementing one would fully satisfy the other. Set "keep" to whichever issue has more complete or enriched content (fuller acceptance criteria, more validated context); if the two are equally complete, "keep" is the lower-numbered issue. Set "duplicate" to the other. Never propose MERGE_DUPLICATE for issues that merely depend on or relate to each other — only true duplicates.
 - ENGINEERING ambiguity (which module owns a behavior, whether an abstraction already exists) does NOT require NEEDS_HUMAN: resolve it by inspecting the repository.
-- PRODUCT ambiguity, MISSING_CONTEXT (a requirement you cannot locate enough information about), and CONFLICTING_REQUIREMENTS (two requirement documents disagree) MUST produce a NEEDS_HUMAN patch with specific questions.
+- PRODUCT ambiguity, MISSING_CONTEXT (a requirement you cannot locate enough information about), and CONFLICTING_REQUIREMENTS (two requirement documents disagree) MUST produce a NEEDS_HUMAN patch with specific questions.${applySteeringRule}
 - Every NEEDS_HUMAN question MUST include a "recommendation": your own best-guess answer, stated plainly and justified from the requirement documents or repository evidence you already gathered. This is not optional and never blank — the operator applying the patch can accept your recommendation with a single keystroke instead of typing an answer, so give the recommendation you would actually pick if forced to decide. State it as a recommendation, not a decision: do not act on it yourself.
 - An issue is the right size when it has one primary outcome, fits one isolated agent session, and its acceptance criteria are independently testable. If an issue's scope spans multiple independent behavioral outcomes (not just multiple implementation steps toward one outcome), it is oversized. When the split itself is mechanical — the outcomes are clear and their relative order/priority is not a product call — propose SPLIT_ISSUE with one full IssueSpec (title + complete enrichment) per outcome. When which slice ships first, or how to divide the scope, requires a product decision, raise a NEEDS_HUMAN patch (ambiguityType "PRODUCT") naming the outcomes instead of proposing a split yourself.
 - Never silently drop a requirement or an issue from your analysis.
@@ -112,5 +132,5 @@ ${requirementsSection}
 
 Epic issues
 -----------
-${issuesSection}${priorSection}`;
+${issuesSection}${priorSection}${applySteeringSection}`;
 }
