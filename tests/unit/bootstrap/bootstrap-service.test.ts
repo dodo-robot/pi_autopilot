@@ -53,7 +53,11 @@ class FakePi {
   }
 }
 
-function makeService(pi = new FakePi(), threshold = 80_000) {
+function makeService(
+  pi = new FakePi(),
+  threshold = 80_000,
+  github?: { listOpenEpicTitles: () => Promise<string[]> },
+) {
   tmpDir = mkdtempSync(path.join(tmpdir(), "bootstrap-service-test-"));
   const paths = appPaths(tmpDir);
   const artifacts = new ArtifactStore(paths);
@@ -68,6 +72,7 @@ function makeService(pi = new FakePi(), threshold = 80_000) {
       bootstrapperTimeoutMs: 5_000,
       planId: "bootstrap-20260823-test01",
       now: () => "2026-08-23T10:00:00Z",
+      github,
     }),
     pi,
     paths,
@@ -84,6 +89,36 @@ describe("BootstrapService.plan", () => {
     expect(pi.calls[0].role).toBe("bootstrapper");
     expect(result.planId).toBe("bootstrap-20260823-test01");
     expect(result.markdownPath).toContain("bootstrap-plan.md");
+  });
+
+  it("fetches open epic titles from GitHub and includes them verbatim in the prompt", async () => {
+    const pi = new FakePi();
+    const github = {
+      listOpenEpicTitles: async () => ["M1 — Data Ingestion & Staging", "M2 — Motore di Calcolo"],
+    };
+    const { service } = makeService(pi, 80_000, github);
+    await service.plan([doc]);
+    expect(pi.calls[0].prompt).toContain("M1 — Data Ingestion & Staging");
+    expect(pi.calls[0].prompt).toContain("M2 — Motore di Calcolo");
+  });
+
+  it("falls back to no existing epics when the GitHub lookup fails, without failing plan()", async () => {
+    const pi = new FakePi();
+    const github = {
+      listOpenEpicTitles: async () => {
+        throw new Error("gh is not authenticated");
+      },
+    };
+    const { service } = makeService(pi, 80_000, github);
+    const result = await service.plan([doc]);
+    expect(result.planId).toBe("bootstrap-20260823-test01");
+    expect(pi.calls[0].prompt).toMatch(/no (existing )?(open )?epics/i);
+  });
+
+  it("works without a github dep at all (existing callers keep working)", async () => {
+    const { service, pi } = makeService();
+    await service.plan([doc]);
+    expect(pi.calls[0].prompt).toMatch(/no (existing )?(open )?epics/i);
   });
 
   it("throws BootstrapSizeError when docs exceed threshold", async () => {

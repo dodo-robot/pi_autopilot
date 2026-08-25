@@ -144,6 +144,12 @@ async function runPlan(
   const configuredTimeout =
     (config as { bootstrap?: { timeoutMinutes?: number } }).bootstrap?.timeoutMinutes ?? 90;
   const bootstrapperTimeoutMs = (opts.bootstrapTimeout ?? configuredTimeout) * 60_000;
+  // Best-effort: lets the bootstrapper reuse exact existing epic titles
+  // instead of proposing near-duplicates. BootstrapService swallows a
+  // failure here (no gh auth, repo not pushed yet, etc.) and falls back to
+  // "no existing epics" rather than blocking --plan, which has no other
+  // GitHub dependency.
+  const github = await GitHubAdapter.create(ctx.root, runner).catch(() => undefined);
   const service = new BootstrapService({
     repository: ctx,
     config,
@@ -153,6 +159,7 @@ async function runPlan(
     bootstrapperModel,
     hasExistingConfig,
     bootstrapperTimeoutMs,
+    ...(github !== undefined ? { github } : {}),
   });
   return service.plan(docs);
 }

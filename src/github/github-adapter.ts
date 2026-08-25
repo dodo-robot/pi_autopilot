@@ -71,6 +71,8 @@ export interface GitHubPort {
   addLabel(number: number, name: string): Promise<void>;
   /** Link an existing issue as a GitHub sub-issue of a parent issue. */
   addSubIssue(parentNumber: number, subIssueId: number): Promise<void>;
+  /** Titles of every open issue labeled "epic", for reuse-by-title prompting. */
+  listOpenEpicTitles(): Promise<string[]>;
   removeLabel(number: number, name: string): Promise<void>;
   closeIssue(number: number): Promise<void>;
 }
@@ -119,6 +121,7 @@ export interface OctokitLike {
         owner: string;
         repo: string;
         state: "open" | "closed" | "all";
+        labels?: string;
         per_page: number;
         page: number;
       }): Promise<{ data: OctokitIssueData[] }>;
@@ -534,6 +537,26 @@ export class GitHubAdapter implements GitHubPort {
         `failed to add sub-issue ${subIssueId} to #${parentNumber}`,
         { cause: error },
       );
+    }
+  }
+
+  async listOpenEpicTitles(): Promise<string[]> {
+    try {
+      const pages = await this.paginate((page) =>
+        this.octokit.rest.issues.listForRepo({
+          owner: this.owner,
+          repo: this.repo,
+          state: "open",
+          labels: "epic",
+          per_page: PAGE_SIZE,
+          page,
+        }),
+      );
+      return pages
+        .filter((issue) => issue.pull_request === undefined)
+        .map((issue) => issue.title);
+    } catch (error) {
+      throw new GitHubError("failed to list open epic titles", { cause: error });
     }
   }
 

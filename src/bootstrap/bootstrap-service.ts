@@ -26,6 +26,11 @@ export interface BootstrapperRunner {
   run(request: PiRunRequest): Promise<PiExecution>;
 }
 
+/** Narrow seam over GitHubAdapter; only what plan() needs to look up existing epics. */
+export interface ExistingEpicsLookup {
+  listOpenEpicTitles(): Promise<string[]>;
+}
+
 export interface BootstrapServiceDeps {
   repository: RepositoryContext;
   config: AutopilotConfig;
@@ -42,6 +47,13 @@ export interface BootstrapServiceDeps {
    * a console prompt on stdin when not provided.
    */
   onQuestion?: (question: PendingQuestion) => Promise<string>;
+  /**
+   * Optional: fetches open epic titles from GitHub so the prompt can ask the
+   * bootstrapper to reuse an exact existing title instead of proposing a
+   * near-duplicate. Omitted (or a failing lookup) falls back to "no existing
+   * epics" rather than blocking --plan, which stays usable without gh access.
+   */
+  github?: ExistingEpicsLookup;
 }
 
 export class BootstrapSizeError extends Error {
@@ -94,6 +106,19 @@ export class BootstrapService {
     this.now = deps.now ?? (() => new Date().toISOString());
   }
 
+  /**
+   * Best-effort lookup: a failure here (no gh auth, network, repo not yet
+   * pushed) must not block --plan, which has no other GitHub dependency.
+   */
+  private async fetchExistingEpicTitles(): Promise<string[]> {
+    if (this.deps.github === undefined) return [];
+    try {
+      return await this.deps.github.listOpenEpicTitles();
+    } catch {
+      return [];
+    }
+  }
+
   async plan(requirementDocs: RequirementDoc[]): Promise<{ planId: string; markdownPath: string }> {
     const threshold = (this.deps.config as { bootstrap?: { tokenThreshold?: number } }).bootstrap?.tokenThreshold ?? 80_000;
     const sizeResult = checkSize(requirementDocs, threshold);
@@ -104,11 +129,13 @@ export class BootstrapService {
     const planId = this.deps.planId ?? generatePlanId();
     const analysisDir = this.deps.paths.runDir(planId);
     const hasExistingConfig = this.deps.hasExistingConfig ?? false;
+    const existingEpicTitles = await this.fetchExistingEpicTitles();
 
     const prompt = buildBootstrapperPrompt({
       repository: this.deps.repository.repository,
       requirementDocs,
       hasExistingConfig,
+      existingEpicTitles,
     });
 
     const skillConfig = (this.deps.config as { bootstrap?: { skillPaths?: string[] } }).bootstrap?.skillPaths ?? [];

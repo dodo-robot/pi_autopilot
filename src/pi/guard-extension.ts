@@ -2,11 +2,33 @@ import { readFileSync, writeFileSync, realpathSync, mkdirSync, existsSync } from
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Type } from "typebox";
+import type { z } from "zod";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   assertWorkspacePath,
   evaluateShellCommand,
 } from "../security/command-policy.js";
+import type { Role } from "../domain/contracts.js";
+import {
+  BootstrapperResultSchema,
+  BrainstormerResultSchema,
+  ImplementerResultSchema,
+  ReconcilerResultSchema,
+  RefinerResultSchema,
+  ReviewerResultSchema,
+} from "../domain/contracts.js";
+
+/** Mirrors pi-runner.ts's ROLE_SCHEMAS, kept local so the guard extension
+ * (which runs inside the pi session process) doesn't pull in the
+ * orchestrator-side ProcessRunner/config imports pi-runner.ts carries. */
+const ROLE_SCHEMAS: Record<Role, z.ZodType> = {
+  refiner: RefinerResultSchema,
+  implementer: ImplementerResultSchema,
+  reviewer: ReviewerResultSchema,
+  brainstormer: BrainstormerResultSchema,
+  reconciler: ReconcilerResultSchema,
+  bootstrapper: BootstrapperResultSchema,
+};
 
 /**
  * Guard envelope written by the orchestrator before launching Pi. Contains
@@ -194,13 +216,51 @@ export default function guardExtension(pi: ExtensionAPI): void {
     label: "Submit role result",
     description:
       "Submit the final structured result for this role exactly once. " +
-      "Call it exactly once, with the complete JSON payload, when the role's work is finished.",
+      "Call it exactly once, with the complete JSON payload, when the role's work is finished. " +
+      "The payload is validated against this role's result schema before being accepted; " +
+      "an invalid payload is rejected with the validation error and can be corrected and resubmitted.",
     parameters: Type.Object({
       payload: Type.String({
         description: "The complete structured result as a JSON string",
       }),
     }),
     async execute(_id, params) {
+      let data: unknown;
+      try {
+        data = JSON.parse(params.payload);
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Result rejected: invalid JSON (${(error as Error).message})`,
+            },
+          ],
+          details: { submitted: false },
+          isError: true,
+        };
+      }
+
+      const schema = ROLE_SCHEMAS[envelope.role as Role] as z.ZodType | undefined;
+      if (schema !== undefined) {
+        const parsed = schema.safeParse(data);
+        if (!parsed.success) {
+          const details = parsed.error.issues
+            .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+            .join("; ");
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Result rejected: invalid ${envelope.role} result: ${details}`,
+              },
+            ],
+            details: { submitted: false },
+            isError: true,
+          };
+        }
+      }
+
       try {
         writeFileSync(envelope.resultPath, params.payload, {
           flag: "wx",

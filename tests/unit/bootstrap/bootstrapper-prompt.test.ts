@@ -16,4 +16,26 @@ describe("buildBootstrapperPrompt", () => {
     expect(prompt).toContain("ask_human");
     expect(prompt).toContain("human-in-the-loop");
   });
+
+  it("lists existing open epic titles verbatim and instructs reuse when scope matches", () => {
+    const prompt = buildBootstrapperPrompt({
+      repository: { owner: "acme", repo: "widgets" },
+      requirementDocs: [{ path: "requirements.md", content: "## Auth\nUsers must log in." }],
+      hasExistingConfig: false,
+      existingEpicTitles: ["M1 — Data Ingestion & Staging", "M2 — Motore di Calcolo"],
+    });
+    expect(prompt).toContain("M1 — Data Ingestion & Staging");
+    expect(prompt).toContain("M2 — Motore di Calcolo");
+    expect(prompt).toContain("exact");
+  });
+
+  it("says no open epics exist yet when the list is empty", () => {
+    const prompt = buildBootstrapperPrompt({
+      repository: { owner: "acme", repo: "widgets" },
+      requirementDocs: [{ path: "requirements.md", content: "## Auth\nUsers must log in." }],
+      hasExistingConfig: false,
+      existingEpicTitles: [],
+    });
+    expect(prompt).toMatch(/no (existing )?(open )?epics/i);
+  });
 });

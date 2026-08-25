@@ -5,10 +5,22 @@ export interface BootstrapperPromptInput {
   repository: RepositoryRef;
   requirementDocs: RequirementDoc[];
   hasExistingConfig: boolean;
+  /**
+   * Titles of open, epic-labeled issues already on GitHub, fetched by the
+   * orchestrator before the session starts (the bootstrapper itself has no
+   * gh/network access). Lets the model reuse an exact existing title instead
+   * of proposing a near-duplicate that a later --apply can't title-match.
+   */
+  existingEpicTitles?: string[];
 }
 
 export function buildBootstrapperPrompt(input: BootstrapperPromptInput): string {
-  const { repository, requirementDocs, hasExistingConfig } = input;
+  const { repository, requirementDocs, hasExistingConfig, existingEpicTitles = [] } = input;
+
+  const existingEpicsSection =
+    existingEpicTitles.length > 0
+      ? `The following epics already exist as open issues on GitHub:\n${existingEpicTitles.map((t) => `- ${t}`).join("\n")}\n\nIf a new epic you are proposing covers the same scope as one of these, reuse its title EXACTLY (character-for-character, including punctuation like em-dashes) instead of inventing a new one — a later step matches epics by exact title, and a near-miss (missing dash, added suffix, reworded) creates a duplicate epic on the board.`
+      : "No existing open epics were found on GitHub yet — you are proposing the initial epic structure.";
 
   const requirementsSection = requirementDocs
     .map((doc) => `--- ${doc.path} ---\n${doc.content}`)
@@ -29,6 +41,10 @@ You are operating with a human-in-the-loop: a real operator is watching this ses
 Only ask questions whose answers would materially change the plan. Prefer to resolve things yourself from the requirement documents and the repository when the answer is discoverable; reserve ask_human for decisions only a product owner can make. Context passed to ask_human is shown to the operator alongside the question.
 
 ${configNote}
+
+## Existing epics on GitHub
+
+${existingEpicsSection}
 
 ## Your output must include:
 
@@ -88,5 +104,7 @@ Rules:
 - Dependencies must be acyclic (no circular dependencies).
 - Issue bodies must be self-contained: include goal, acceptance criteria, constraints, and relevant source sections.
 - Do not invent requirements not present in the documents.
+- Each dependency's "from" and "to" must each be a single, separate issue/epic reference (e.g. "issue:M5-01"), never a combined string like "issue:M5-02 to issue:M5-01".
+- submit_result validates your payload before accepting it. If it is rejected, read the validation error, fix only the offending field(s), and call submit_result again in the same session — do not restart your analysis.
 `;
 }

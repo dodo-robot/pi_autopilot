@@ -272,6 +272,85 @@ describe("GitHubAdapter", () => {
     ).resolves.toMatchObject({ number: 170, state: "closed" });
   });
 
+  it("lists titles of open epic-labeled issues", async () => {
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.listForRepo.mockResolvedValue({
+      data: [
+        {
+          number: 75,
+          node_id: "I_75",
+          title: "Infrastruttura & Requisiti Non Funzionali",
+          body: "",
+          updated_at: "2026-08-24T00:00:00Z",
+          state: "open",
+          html_url: "https://github.com/acme/widgets/issues/75",
+        },
+        {
+          number: 76,
+          node_id: "I_76",
+          title: "M1 — Data Ingestion & Staging",
+          body: "",
+          updated_at: "2026-08-24T00:00:00Z",
+          state: "open",
+          html_url: "https://github.com/acme/widgets/issues/76",
+        },
+      ],
+    });
+    const { github } = await makeAdapter(octokit);
+    await expect(github.listOpenEpicTitles()).resolves.toEqual([
+      "Infrastruttura & Requisiti Non Funzionali",
+      "M1 — Data Ingestion & Staging",
+    ]);
+    expect(octokit.rest.issues.listForRepo).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "widgets",
+      state: "open",
+      labels: "epic",
+      per_page: 100,
+      page: 1,
+    });
+  });
+
+  it("paginates when listing open epic titles across more than one page", async () => {
+    const { octokit } = makeOctokit();
+    const fullPage = Array.from({ length: 100 }, (_, index) => ({
+      number: index + 1,
+      node_id: `I_${index + 1}`,
+      title: `Epic ${index + 1}`,
+      body: "",
+      updated_at: "2026-08-24T00:00:00Z",
+      state: "open",
+      html_url: `https://github.com/acme/widgets/issues/${index + 1}`,
+    }));
+    octokit.rest.issues.listForRepo
+      .mockResolvedValueOnce({ data: fullPage })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            number: 101,
+            node_id: "I_101",
+            title: "Epic 101",
+            body: "",
+            updated_at: "2026-08-24T00:00:00Z",
+            state: "open",
+            html_url: "https://github.com/acme/widgets/issues/101",
+          },
+        ],
+      });
+    const { github } = await makeAdapter(octokit);
+    const titles = await github.listOpenEpicTitles();
+    expect(titles).toHaveLength(101);
+    expect(titles[100]).toBe("Epic 101");
+    expect(octokit.rest.issues.listForRepo).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns an empty array when there are no open epics", async () => {
+    const { octokit } = makeOctokit();
+    octokit.rest.issues.listForRepo.mockResolvedValue({ data: [] });
+    const { github } = await makeAdapter(octokit);
+    await expect(github.listOpenEpicTitles()).resolves.toEqual([]);
+  });
+
   it("returns null when no issue title matches", async () => {
     const { octokit } = makeOctokit();
     octokit.rest.issues.listForRepo.mockResolvedValue({ data: [] });

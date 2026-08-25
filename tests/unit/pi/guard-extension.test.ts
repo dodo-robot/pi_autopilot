@@ -263,9 +263,12 @@ describe("guard extension", () => {
     const tool = submitTool(mock);
 
     const payload = JSON.stringify({
-      outcome: "APPROVED",
-      criteriaResults: [],
-      findings: [],
+      outcome: "COMPLETED",
+      summary: "done",
+      changedPaths: [],
+      commandsAttempted: [],
+      unresolvedProblems: [],
+      evidenceLocations: [],
     });
 
     const first = await tool.execute("call-1", { payload });
@@ -277,7 +280,7 @@ describe("guard extension", () => {
     expect(second.isError).toBe(true);
   });
 
-  it("submit_result rejects malformed payloads with the same once-only rule", async () => {
+  it("submit_result rejects invalid JSON without writing, so the model can retry in-session", async () => {
     const setup = setupGuard();
     const mod = await import("../../../src/pi/guard-extension.js");
     const mock = mockPi();
@@ -285,11 +288,50 @@ describe("guard extension", () => {
     const tool = submitTool(mock);
 
     const verdict = await tool.execute("call-3", { payload: "{not json" });
-    // The guard stores whatever the agent submits; schema validation happens
-    // in the runner after the process exits. The store itself is atomic.
-    expect(verdict.isError).not.toBe(true);
+    expect(verdict.isError).toBe(true);
+    expect(existsSync(setup.resultPath)).toBe(false);
+  });
+
+  it("submit_result rejects a payload that fails the role's schema, without writing", async () => {
+    // Reproduces the real bootstrapper failure: a well-formed JSON payload
+    // whose dependencies[0].to is an empty string. Previously this was
+    // written to disk unchecked and only rejected by the runner after the
+    // whole pi session (including any ask_human exchanges) had already
+    // exited, forcing a full restart. It must now be rejected in-session so
+    // the model can correct and resubmit without losing that context.
+    const setup = setupGuard({ role: "bootstrapper" });
+    const mod = await import("../../../src/pi/guard-extension.js");
+    const mock = mockPi();
+    mod.default(mock.pi);
+    const tool = submitTool(mock);
+
+    const invalidPayload = JSON.stringify({
+      projectBoard: { title: "Board", columns: ["Todo"] },
+      epics: [],
+      dependencies: [
+        { from: "issue:M5-02 to issue:M5-01", to: "", reason: "placeholder" },
+      ],
+      tracks: [],
+    });
+
+    const verdict = await tool.execute("call-4", { payload: invalidPayload });
+    expect(verdict.isError).toBe(true);
+    expect(verdict.content[0]?.text).toMatch(/dependencies\.0\.to/);
+    expect(existsSync(setup.resultPath)).toBe(false);
+
+    // The model can now correct and resubmit within the same session.
+    const validPayload = JSON.stringify({
+      projectBoard: { title: "Board", columns: ["Todo"] },
+      epics: [],
+      dependencies: [
+        { from: "issue:M5-02", to: "issue:M5-01", reason: "ordering" },
+      ],
+      tracks: [],
+    });
+    const retry = await tool.execute("call-5", { payload: validPayload });
+    expect(retry.isError).not.toBe(true);
     expect(existsSync(setup.resultPath)).toBe(true);
-    expect(readFileSync(setup.resultPath, "utf8")).toBe("{not json");
+    expect(readFileSync(setup.resultPath, "utf8")).toBe(validPayload);
   });
 
   it("allows reads of a skill path listed in skillPaths", async () => {
