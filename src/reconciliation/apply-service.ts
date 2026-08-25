@@ -231,17 +231,22 @@ export class ApplyService {
     };
 
     await this.deps.artifacts.writeJson(analysisId, APPLY_ARTIFACT, result);
-    await this.deps.artifacts.writeLatestApply(
-      report.repository.owner,
-      report.repository.repo,
-      report.epicRef,
-      {
-        analysisId,
-        epicRef: report.epicRef,
-        repository: report.repository,
-        appliedAt: this.now(),
-      },
-    );
+    // A preview-only or aborted run records no (or only partial) durable human
+    // decisions; repointing the index at it would erase the declines from the
+    // last real apply, silently losing the steering signal.
+    if (opts.previewOnly !== true && !aborted) {
+      await this.deps.artifacts.writeLatestApply(
+        report.repository.owner,
+        report.repository.repo,
+        report.epicRef,
+        {
+          analysisId,
+          epicRef: report.epicRef,
+          repository: report.repository,
+          appliedAt: this.now(),
+        },
+      );
+    }
     return result;
   }
 

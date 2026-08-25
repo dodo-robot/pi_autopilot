@@ -20,7 +20,7 @@ import { classifyPatch } from "./patch-policy.js";
 import type { RequirementDoc } from "./prompt.js";
 import { buildReconcilerPrompt } from "./prompt.js";
 import { APPLY_ARTIFACT } from "./apply-service.js";
-import type { ApplyReport } from "../domain/apply.js";
+import type { ApplyReport, DeclinedPatch } from "../domain/apply.js";
 import { extractDeclines } from "./steering.js";
 
 /** Structural Pi runner surface consumed by reconciliation (satisfied by
@@ -115,7 +115,7 @@ export class ReconciliationService {
       repository.repo,
       epicRef,
     );
-    let applySteering;
+    let applySteering: DeclinedPatch[] | undefined;
     if (latestApply !== null) {
       const applyReport = await this.deps.artifacts.readJson<ApplyReport>(
         latestApply.analysisId,

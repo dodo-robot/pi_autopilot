@@ -276,6 +276,69 @@ describe("ApplyService.apply", () => {
     expect(result.summary.applied).toBe(1);
   });
 
+  it("does not overwrite an existing latest-apply pointer on a preview-only run", async () => {
+    github.issues.set(15, issue15());
+    const priorApply = {
+      analysisId: "reconcile-0-12",
+      epicRef: 12,
+      repository,
+      appliedAt: "2026-08-20T00:00:00.000Z",
+    };
+    await artifacts.writeLatestApply("acme", "widgets", 12, priorApply);
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "ENRICH_ISSUE",
+          issue: 15,
+          patch: enrichment("Add OAuth refresh"),
+          reason: "missing criteria",
+          policy: "auto-safe",
+        },
+      ]),
+    );
+
+    const result = await service().apply(analysisId, { previewOnly: true, yes: false });
+
+    expect(result.entries[0]?.outcome).toEqual({ status: "skipped", skippedBy: "preview-only" });
+    const pointer = await artifacts.readLatestApply("acme", "widgets", 12);
+    expect(pointer?.analysisId).toBe("reconcile-0-12");
+    expect(pointer).toEqual(priorApply);
+  });
+
+  it("does not overwrite an existing latest-apply pointer on an aborted run", async () => {
+    github.issues.set(15, issue15());
+    github.issues.set(16, makeIssue(16, "Session storage", "Implement sessions"));
+    const priorApply = {
+      analysisId: "reconcile-0-12",
+      epicRef: 12,
+      repository,
+      appliedAt: "2026-08-20T00:00:00.000Z",
+    };
+    await artifacts.writeLatestApply("acme", "widgets", 12, priorApply);
+    await artifacts.writeJson(
+      analysisId,
+      "reconciliation-report.json",
+      baseReport([
+        {
+          type: "ENRICH_ISSUE",
+          issue: 15,
+          patch: enrichment("Add OAuth refresh"),
+          reason: "missing criteria",
+          policy: "auto-safe",
+        },
+        { type: "ADD_DEPENDENCY", issue: 15, dependsOn: 16, reason: "needs #16", policy: "auto-safe" },
+      ]),
+    );
+
+    const result = await service({ confirmMenu: async () => "abort" }).apply(analysisId, { yes: false });
+
+    expect(result.aborted).toBe(true);
+    const pointer = await artifacts.readLatestApply("acme", "widgets", 12);
+    expect(pointer).toEqual(priorApply);
+  });
+
   it("links a matching unlinked live issue by title instead of creating a duplicate", async () => {
     github.issues.set(12, epic());
     github.issues.set(21, makeIssue(21, "New widget", "Already exists outside the epic"));
