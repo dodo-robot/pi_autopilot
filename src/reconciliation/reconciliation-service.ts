@@ -101,6 +101,11 @@ export class ReconciliationService {
       );
     }
 
+    // Reject closed epics before any reconciler work.
+    if (epic.state === "closed") {
+      throw new Error(`epic #${epicRef} is closed; reconcile only operates on open epics`);
+    }
+
     const { issues: epicIssueRefs, unresolvedProseLines } = collectEpicIssueRefs(epic.body);
     const uniqueRefs = [...new Set(epicIssueRefs)];
     const { issues, missing } = await resolveIssueSet(
@@ -109,6 +114,9 @@ export class ReconciliationService {
       this.deps.github,
       repository,
     );
+
+    // Filter out closed checklist issues; only open issues are in active reconcile scope.
+    const openIssues = issues.filter((issue) => issue.state !== "closed");
 
     const latestApply = await this.deps.artifacts.readLatestApply(
       repository.owner,
@@ -128,7 +136,7 @@ export class ReconciliationService {
     const prompt = buildReconcilerPrompt({
       repository,
       epic,
-      issues,
+      issues: openIssues,
       requirementDocs,
       ...(applySteering !== undefined && applySteering.length > 0 ? { applySteering } : {}),
     });
@@ -175,7 +183,7 @@ export class ReconciliationService {
     }));
 
     const issueLikes: Array<{ number: number; title: string; body: string; state: string }> =
-      issues.map((issue: GitHubIssue) => ({
+      openIssues.map((issue: GitHubIssue) => ({
         number: issue.number,
         title: issue.title,
         body: issue.body,
@@ -187,10 +195,20 @@ export class ReconciliationService {
       issueLikes,
     );
 
-    const patches: ReconciledPatch[] = downgraded.map((patch) => ({
-      ...patch,
-      policy: classifyPatch(patch),
-    }));
+    // Discard patches targeting closed/out-of-scope issues; only report patches for open checklist issues.
+    const patches: ReconciledPatch[] = downgraded
+      .filter((patch) => {
+        if (patch.issue !== null) {
+          const target = openIssues.find((i) => i.number === patch.issue);
+          return target !== undefined;
+        }
+        // NEEDS_HUMAN patches with issue=null are kept (prose-only checklist lines).
+        return true;
+      })
+      .map((patch) => ({
+        ...patch,
+        policy: classifyPatch(patch),
+      }));
 
     const patchCounts: Record<string, number> = {};
     for (const patch of patches) {
