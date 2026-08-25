@@ -630,4 +630,24 @@ describe("autopilot reconcile-apply", () => {
 
     expect(cmd.createApplyCalled()).toBe(true);
   });
+
+  it("persists the per-epic latest-apply index after a real apply", async () => {
+    const github = new RecordingGitHub([
+      makeIssue(15, "Existing task", "Needs enrichment"),
+      makeIssue(16, "Dependent task", "Do this after prerequisite."),
+      makeIssue(17, "Stale task", "Potentially stale."),
+      makeIssue(18, "Ambiguous task", "Needs a product decision."),
+    ]);
+    const { program, dataDir, exitCode } = makeRealApplyCommand(github);
+    await seedStoredReport(dataDir, APPLY_SAFE_REPORT);
+
+    await run(program, ["reconcile-e2e", "--yes"]);
+
+    const store = new ArtifactStore(appPaths(dataDir));
+    const pointer = await store.readLatestApply("acme", "widgets", 12);
+    expect(pointer).not.toBeNull();
+    expect(pointer?.analysisId).toBe("reconcile-e2e");
+    expect(pointer?.epicRef).toBe(12);
+    expect(exitCode()).toBe(0);
+  });
 });
