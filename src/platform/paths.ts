@@ -20,6 +20,12 @@ export interface AppPaths {
    * distinct from the per-run directories under `runs/check-*`.
    */
   issuePointerPath(owner: string, repo: string, issueNumber: number): string;
+  /**
+   * Absolute path for an epic's latest-apply index pointer under
+   * `runs/_latest/<owner>/<repo>/apply-epic-<N>.json`, distinct from the
+   * per-issue readiness pointers (same directory, different filename).
+   */
+  latestApplyPath(owner: string, repo: string, epicNumber: number): string;
 }
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -84,6 +90,17 @@ export function appPaths(dataDir: string = defaultDataDir()): AppPaths {
         repo,
         `${issueNumber}.json`,
       );
+    },
+    latestApplyPath(owner: string, repo: string, epicNumber: number): string {
+      for (const segment of [owner, repo]) {
+        if (!POINTER_SEGMENT_PATTERN.test(segment)) {
+          throw new Error(`unsafe pointer segment: ${JSON.stringify(segment)}`);
+        }
+      }
+      if (!Number.isInteger(epicNumber) || epicNumber <= 0) {
+        throw new Error(`unsafe epic number: ${JSON.stringify(epicNumber)}`);
+      }
+      return path.join(runsDir, "_latest", owner, repo, `apply-epic-${epicNumber}.json`);
     },
   };
 }

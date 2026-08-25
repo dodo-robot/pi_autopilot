@@ -23,6 +23,14 @@ export interface LatestReadinessPointer {
   createdAt: string;
 }
 
+/** Per-epic pointer to the latest reconciliation apply report. */
+export interface LatestApply {
+  analysisId: string;
+  epicRef: number;
+  repository: { owner: string; repo: string };
+  appliedAt: string;
+}
+
 /** Stable reference to an artifact inside a run's artifact directory. */
 export interface ArtifactRef {
   runId: string;
@@ -107,6 +115,50 @@ export class ArtifactStore {
     }
     try {
       return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Persist the per-epic latest-apply pointer. Overwrites any prior pointer
+   * for the same epic. Written atomically via the same tmp+rename pattern.
+   */
+  async writeLatestApply(
+    owner: string,
+    repo: string,
+    epicNumber: number,
+    data: LatestApply,
+  ): Promise<void> {
+    const target = this.paths.latestApplyPath(owner, repo, epicNumber);
+    await mkdir(path.dirname(target), { recursive: true });
+    const tmp = `${target}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+    await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await rename(tmp, target);
+  }
+
+  /**
+   * Read the per-epic latest-apply pointer, or `null` when it does not
+   * exist or fails to parse (tolerant: a corrupt pointer simply means "no
+   * reusable apply index").
+   */
+  async readLatestApply(
+    owner: string,
+    repo: string,
+    epicNumber: number,
+  ): Promise<LatestApply | null> {
+    const target = this.paths.latestApplyPath(owner, repo, epicNumber);
+    let raw: string;
+    try {
+      raw = await readFile(target, "utf8");
+    } catch {
+      return null;
+    }
+    try {
+      return JSON.parse(raw) as LatestApply;
     } catch {
       return null;
     }
