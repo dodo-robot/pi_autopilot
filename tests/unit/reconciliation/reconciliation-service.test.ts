@@ -142,6 +142,24 @@ function fakePi(result: ReconcilerResult): ReconcilerRunner {
   };
 }
 
+let capturedPrompt: string;
+function capturePi(): ReconcilerRunner {
+  return {
+    async run(request): Promise<PiExecution> {
+      capturedPrompt = request.prompt;
+      return {
+        result: { coverage: [], patches: [] },
+        exitCode: 0,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+        resultPath: "/tmp/result.json",
+        sessionDir: "/tmp/session",
+      };
+    },
+  };
+}
+
 const dirs: string[] = [];
 function makeService(pi: ReconcilerRunner, github: GitHubPort = new FakeGitHub()) {
   const dataDir = mkdtempSync(path.join(tmpdir(), "autopilot-reconcile-"));
@@ -424,5 +442,44 @@ describe("ReconciliationService.reconcile", () => {
     const report = await service.reconcile(12, []);
     const persisted = await artifacts.readJson("reconcile-test", "reconciliation-report.json");
     expect(persisted).toEqual(report);
+  });
+
+  it("passes apply declines from the latest apply report into the reconciler prompt", async () => {
+    capturedPrompt = "";
+    const { service, artifacts } = makeService(capturePi());
+    // Epic #12 has issue #15.
+    // Write a prior apply report for epic #12 with a user decline, plus the index pointer.
+    await artifacts.writeJson(
+      "reconcile-test",
+      "reconciliation-apply.json",
+      {
+        repository,
+        analysisId: "reconcile-test",
+        appliedAt: "2026-08-22T00:00:00Z",
+        staleness: { staleAgeHours: 1, guardApplied: true, overriddenByForce: false },
+        entries: [
+          { patchType: "ENRICH_ISSUE", targetIssue: 15, policy: "requires-approval", outcome: { status: "skipped", skippedBy: "user" }, detail: "enrich #15", declineReason: "waiting on product decision" },
+        ],
+        summary: { applied: 0, skippedRequiresApproval: 0, skippedIdempotent: 0, skippedUser: 1, failed: 0, previewed: 0 },
+      },
+    );
+    await artifacts.writeLatestApply("acme", "widgets", 12, {
+      analysisId: "reconcile-test",
+      epicRef: 12,
+      repository,
+      appliedAt: "2026-08-22T00:00:00Z",
+    });
+
+    await service.reconcile(12, []);
+    expect(capturedPrompt).toContain("Apply steering context");
+    expect(capturedPrompt).toContain("ENRICH_ISSUE #15");
+    expect(capturedPrompt).toContain("waiting on product decision");
+  });
+
+  it("builds the prompt without steering when no apply index exists for the epic", async () => {
+    capturedPrompt = "";
+    const { service } = makeService(capturePi());
+    await service.reconcile(12, []);
+    expect(capturedPrompt).not.toContain("Apply steering context");
   });
 });

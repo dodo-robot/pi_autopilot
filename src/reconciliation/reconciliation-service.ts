@@ -19,6 +19,9 @@ import { applyIdempotencyDowngrades } from "./idempotency.js";
 import { classifyPatch } from "./patch-policy.js";
 import type { RequirementDoc } from "./prompt.js";
 import { buildReconcilerPrompt } from "./prompt.js";
+import { APPLY_ARTIFACT } from "./apply-service.js";
+import type { ApplyReport } from "../domain/apply.js";
+import { extractDeclines } from "./steering.js";
 
 /** Structural Pi runner surface consumed by reconciliation (satisfied by
  * PiRunner). Injected via the constructor so tests can substitute a fake
@@ -107,8 +110,28 @@ export class ReconciliationService {
       repository,
     );
 
+    const latestApply = await this.deps.artifacts.readLatestApply(
+      repository.owner,
+      repository.repo,
+      epicRef,
+    );
+    let applySteering;
+    if (latestApply !== null) {
+      const applyReport = await this.deps.artifacts.readJson<ApplyReport>(
+        latestApply.analysisId,
+        APPLY_ARTIFACT,
+      );
+      applySteering = extractDeclines(applyReport);
+    }
+
     // priorReport intentionally not wired in this milestone — see design spec §6.1 note; the idempotency guarantee (§7.1) doesn't depend on it, only REQ-ID stability across repeated runs does.
-    const prompt = buildReconcilerPrompt({ repository, epic, issues, requirementDocs });
+    const prompt = buildReconcilerPrompt({
+      repository,
+      epic,
+      issues,
+      requirementDocs,
+      ...(applySteering !== undefined && applySteering.length > 0 ? { applySteering } : {}),
+    });
 
     const execution = await this.deps.pi.run({
       role: "reconciler",
