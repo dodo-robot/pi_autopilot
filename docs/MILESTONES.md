@@ -279,6 +279,46 @@ instead of the generic `[y/n/a/q]` menu.
 
 ---
 
+## 2026-08-25 — Reconciler steering from apply results (Tier 1) ✅
+
+**Scope:** Feed human-declined apply patches (`skippedBy: "user"` in
+`reconciliation-apply.json`) back into the next `reconcile <epic>` run's
+reconciler prompt, so the model stops re-proposing patches a human already
+declined.
+
+- **Per-epic apply index.** `ApplyService.apply()` writes a stable
+  latest-apply pointer per epic (`runs/_latest/<owner>/<repo>/apply-epic-<N>.json`)
+  via new `ArtifactStore.writeLatestApply`/`readLatestApply`, mirroring the
+  readiness-pointer mechanism — no directory scan.
+- **Steering signal.** A pure `extractDeclines()` helper plus a `DeclinedPatch`
+  type reduce an apply report to its human-declined patches; every other
+  outcome (`requires-approval` gate, idempotent, `failed`, applied,
+  `NEEDS_HUMAN` answers) is explicitly excluded.
+- **Prompt contract.** `buildReconcilerPrompt` gained an optional
+  `applySteering` input that renders an "Apply steering context" section
+  (styled like the existing prior-REQ-ID section) and a Rules line. The rule
+  and section are conditional: a first-run reconcile with no declines renders
+  a byte-identical prompt.
+- **Reconcile wiring.** `ReconciliationService.reconcile()` reads the per-epic
+  pointer, loads the referenced apply report, extracts declines, and passes
+  them to the prompt.
+- **Index integrity.** The pointer is only repointed by runs that record durable
+  human decisions — preview-only runs and aborted (`q`) runs no longer
+  overwrite the index, so a later reconcile does not silently lose prior
+  steering.
+- Command-level integration test drives the real `reconcile-apply` command and
+  asserts the pointer round-trips, closing the apply→reconcile loop.
+
+Deferred: free-text `declineReason` capture (the `reason` field is plumbed but
+no writer populates it), and single-slot pointer retention (declines from
+apply N-2 are forgotten once apply N-1 lands). Both documented in the design
+spec §12.
+
+Design spec: `docs/superpowers/specs/2026-08-25-reconciler-steering-design.md`
+Implementation plan: `docs/superpowers/plans/2026-08-25-reconciler-steering.md`
+
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and
