@@ -114,9 +114,6 @@ function taskSnapshot(): TaskSnapshot {
 function approvedReview(): ReviewerResult {
   return {
     outcome: "APPROVED",
-    criteriaResults: [
-      { criterionId: "ac1", passed: true, notes: "Verified by test." },
-    ],
     findings: [],
   };
 }
@@ -124,9 +121,6 @@ function approvedReview(): ReviewerResult {
 function changesRequestedReview(): ReviewerResult {
   return {
     outcome: "CHANGES_REQUESTED",
-    criteriaResults: [
-      { criterionId: "ac1", passed: false, notes: "Not verified." },
-    ],
     findings: [
       {
         severity: "critical",

@@ -59,6 +59,25 @@ describe("PiRunner", () => {
     ).toBe(true);
   });
 
+  it("accepts a valid verifier result", async () => {
+    const request = makeRequest({
+      role: "verifier",
+      prompt: "Verify the acceptance criteria. SCENARIO:valid-verifier",
+    });
+    const execution = await new PiRunner().run(request);
+    expect(execution.result).toMatchObject({ outcome: "VERIFIED" });
+  });
+
+  it("rejects a verifier result that fails the role schema", async () => {
+    const request = makeRequest({
+      role: "verifier",
+      prompt: "Verify the acceptance criteria. SCENARIO:invalid-schema",
+    });
+    await expect(new PiRunner().run(request)).rejects.toThrow(
+      "invalid verifier result",
+    );
+  });
+
   it("accepts a valid implementer result", async () => {
     const request = makeRequest({
       role: "implementer",

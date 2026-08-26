@@ -16,6 +16,7 @@ import {
   ReconcilerResultSchema,
   RefinerResultSchema,
   ReviewerResultSchema,
+  VerifierResultSchema,
 } from "../domain/contracts.js";
 import type { ResolvedRoleModel } from "../config/load-config.js";
 import { ProcessRunner } from "../platform/process-runner.js";
@@ -24,12 +25,13 @@ const ROLE_SCHEMAS: Record<Role, z.ZodType> = {
   refiner: RefinerResultSchema,
   implementer: ImplementerResultSchema,
   reviewer: ReviewerResultSchema,
+  verifier: VerifierResultSchema,
   brainstormer: BrainstormerResultSchema,
   reconciler: ReconcilerResultSchema,
   bootstrapper: BootstrapperResultSchema,
 };
 
-/** Tools available to analysis roles (refiner/reviewer): read-only + submit. */
+/** Tools available to analysis roles (refiner/reviewer/verifier): read-only + submit. */
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "submit_result"];
 
 /** Tools available to the implementer: read-only tools plus guarded mutations. */
@@ -41,6 +43,7 @@ const BOOTSTRAPPER_TOOLS = [...READ_ONLY_TOOLS, "ask_human"];
 const ROLE_TOOLS: Record<Role, string[]> = {
   refiner: READ_ONLY_TOOLS,
   reviewer: READ_ONLY_TOOLS,
+  verifier: READ_ONLY_TOOLS,
   implementer: IMPLEMENTER_TOOLS,
   brainstormer: READ_ONLY_TOOLS,
   reconciler: READ_ONLY_TOOLS,

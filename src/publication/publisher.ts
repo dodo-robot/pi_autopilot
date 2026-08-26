@@ -65,14 +65,11 @@ function renderPrBody(input: {
 }): string {
   const { runId, taskSnapshot, review, verification, implementationSummary } = input;
 
+  // Acceptance-criteria verdicts move to the independent verifier role in a
+  // later task; until the verifier result reaches the publisher, every
+  // criterion renders unchecked.
   const criteriaChecklist = taskSnapshot.acceptanceCriteria
-    .map((criterion) => {
-      const result = review.outcome === "APPROVED"
-        ? review.criteriaResults.find((r) => r.criterionId === criterion.id)
-        : undefined;
-      const checked = result?.passed === true ? "x" : " ";
-      return `- [${checked}] ${criterion.text}`;
-    })
+    .map((criterion) => `- [ ] ${criterion.text}`)
     .join("\n");
 
   const verificationLines = verification.commands

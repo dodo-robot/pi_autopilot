@@ -9,6 +9,7 @@ export const RoleSchema = z.enum([
   "refiner",
   "implementer",
   "reviewer",
+  "verifier",
   "brainstormer",
   "reconciler",
   "bootstrapper",
@@ -164,7 +165,7 @@ export type ImplementerResult = z.infer<typeof ImplementerResultSchema>;
 
 export const ReviewerFindingSchema = z.object({
   severity: z.enum(["critical", "important", "minor"]),
-  criterionId: z.string(),
+  criterionId: z.string().optional(),
   path: z.string(),
   line: z.number().int().nonnegative(),
   evidence: z.string(),
@@ -182,12 +183,10 @@ export type CriterionResult = z.infer<typeof CriterionResultSchema>;
 export const ReviewerResultSchema = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("APPROVED"),
-    criteriaResults: z.array(CriterionResultSchema),
     findings: z.array(ReviewerFindingSchema),
   }),
   z.object({
     outcome: z.literal("CHANGES_REQUESTED"),
-    criteriaResults: z.array(CriterionResultSchema),
     findings: z.array(ReviewerFindingSchema),
   }),
   z.object({
@@ -199,6 +198,34 @@ export const ReviewerResultSchema = z.discriminatedUnion("outcome", [
     reason: z.string().min(1),
   }),
 ]);
+
+export const VerifierFindingSchema = z.object({
+  criterionId: z.string().min(1),
+  evidence: z.string().min(1),
+  notes: z.string().min(1),
+});
+export type VerifierFinding = z.infer<typeof VerifierFindingSchema>;
+
+export const VerifierResultSchema = z.discriminatedUnion("outcome", [
+  z.object({
+    outcome: z.literal("VERIFIED"),
+    criteriaResults: z.array(CriterionResultSchema),
+  }),
+  z.object({
+    outcome: z.literal("NOT_VERIFIED"),
+    criteriaResults: z.array(CriterionResultSchema),
+    findings: z.array(VerifierFindingSchema),
+  }),
+  z.object({
+    outcome: z.literal("PRODUCT_AMBIGUITY"),
+    reason: z.string().min(1),
+  }),
+  z.object({
+    outcome: z.literal("FAILED"),
+    reason: z.string().min(1),
+  }),
+]);
+export type VerifierResult = z.infer<typeof VerifierResultSchema>;
 export type ReviewerResult = z.infer<typeof ReviewerResultSchema>;
 
 export const BrainstormerResultSchema = z.object({
@@ -251,6 +278,7 @@ export const RoleResultSchema = z.union([
   RefinerResultSchema,
   ImplementerResultSchema,
   ReviewerResultSchema,
+  VerifierResultSchema,
   BrainstormerResultSchema,
   ReconcilerResultSchema,
   BootstrapperResultSchema,
