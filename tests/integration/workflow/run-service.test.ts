@@ -287,6 +287,20 @@ function verifierVerified(): VerifierResult {
   };
 }
 
+function verifierNotVerified(note = "no evidence in diff"): VerifierResult {
+  return {
+    outcome: "NOT_VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: false, notes: note }],
+    findings: [
+      { criterionId: "ac1", evidence: note, notes: `unresolved: ${note}` },
+    ],
+  };
+}
+
+function verifierProductAmbiguity(reason = "ambiguous acceptance criteria"): VerifierResult {
+  return { outcome: "PRODUCT_AMBIGUITY", reason };
+}
+
 function reviewerChangesRequested(note = "needs work"): ReviewerResult {
   return {
     outcome: "CHANGES_REQUESTED",
@@ -486,6 +500,74 @@ describe("RunService", () => {
     expect(verifierRequests[0]!.prompt).not.toContain("APPROVED");
 
     runStore.close();
+  });
+
+  it("loops back through implementation on verifier NOT_VERIFIED, then publishes once verified", async () => {
+    const harness = await makeHarness("run-fixture-verifier-not-verified");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-verifier-not-verified")]);
+    harness.pi.script("implementer", [
+      implementerCompleted(),
+      implementerCompleted({ summary: "Addressed verifier findings." }),
+    ]);
+    harness.pi.script("reviewer", [reviewerApproved(), reviewerApproved()]);
+    harness.pi.script("verifier", [verifierNotVerified(), verifierVerified()]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("PR_OPEN");
+    const runStore = harness.openRunStore();
+    const transitions = runStore.transitions(summary.runId).map((t) => t.to);
+    expect(transitions.filter((s) => s === "ACCEPTANCE_VERIFICATION")).toHaveLength(2);
+    expect(transitions.filter((s) => s === "CORRECTION")).toHaveLength(1);
+    expect(harness.pi.requests.filter((r) => r.role === "verifier")).toHaveLength(2);
+    expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(2);
+    runStore.close();
+  });
+
+  it("blocks after two acceptance-verification correction cycles are exhausted", async () => {
+    const harness = await makeHarness("run-fixture-verifier-exhausted");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-verifier-exhausted")]);
+    harness.pi.script("implementer", [
+      implementerCompleted(),
+      implementerCompleted({ summary: "Correction 1." }),
+      implementerCompleted({ summary: "Correction 2." }),
+    ]);
+    harness.pi.script("reviewer", [
+      reviewerApproved(),
+      reviewerApproved(),
+      reviewerApproved(),
+    ]);
+    harness.pi.script("verifier", [
+      verifierNotVerified("issue A"),
+      verifierNotVerified("issue B"),
+      verifierNotVerified("issue C"),
+    ]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("BLOCKED");
+    const runStore = harness.openRunStore();
+    const transitions = runStore.transitions(summary.runId).map((t) => t.to);
+    expect(transitions.filter((s) => s === "CORRECTION")).toHaveLength(2);
+    expect(transitions.at(-1)).toBe("BLOCKED");
+    expect(harness.github.pulls.size).toBe(0);
+    runStore.close();
+  });
+
+  it("reaches NEEDS_REFINEMENT on verifier PRODUCT_AMBIGUITY", async () => {
+    const harness = await makeHarness("run-fixture-verifier-ambiguous");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-verifier-ambiguous")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierProductAmbiguity()]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("NEEDS_REFINEMENT");
+    expect(summary.reason).toBe("ambiguous acceptance criteria");
   });
 
   it("blocks at NEEDS_REFINEMENT when the deterministic readiness gate does not pass", async () => {
