@@ -4,7 +4,7 @@ import type { ApplyEntry, ApplyReport } from "../domain/apply.js";
 import type { RepositoryRef } from "../domain/contracts.js";
 import type { GitHubIssue, GitHubPort } from "../github/github-adapter.js";
 import type { ArtifactStore } from "../persistence/artifact-store.js";
-import { collectEpicIssueRefs } from "../analysis/issue-set.js";
+import { collectEpicIssueRefs, isClosedIssue } from "../analysis/issue-set.js";
 import {
   appendDependencyToBody,
   bodyAlreadyDependsOn,
@@ -598,8 +598,9 @@ export class ApplyService {
   private async getIssueOrSkipped(
     patch: Extract<ReconciledPatch, { type: "ENRICH_ISSUE" | "ADD_DEPENDENCY" | "REMOVE_DEPENDENCY" }>,
   ): Promise<GitHubIssue | ApplyEntry> {
+    let issue: GitHubIssue;
     try {
-      return await this.deps.github.getIssue(patch.issue);
+      issue = await this.deps.github.getIssue(patch.issue);
     } catch (error) {
       return skipEntry(
         patch,
@@ -607,6 +608,14 @@ export class ApplyService {
         error instanceof Error ? error.message : String(error),
       );
     }
+
+    // A closed issue is finished work: never rewrite its body, even if the
+    // report was generated while it was still open.
+    if (isClosedIssue(issue)) {
+      return skipEntry(patch, "idempotent", `#${String(patch.issue)} is closed; skipping`);
+    }
+
+    return issue;
   }
 
   private upsertOrSkip(

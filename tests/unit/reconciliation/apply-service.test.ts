@@ -260,6 +260,46 @@ describe("ApplyService.apply", () => {
     expect(stored).toEqual(result);
   });
 
+  it("skips an ENRICH_ISSUE patch whose target issue is closed", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(15, { ...issue15(), state: "closed" });
+
+    const report = baseReport([
+      {
+        type: "ENRICH_ISSUE",
+        issue: 15,
+        patch: { ...enrichment("Add OAuth refresh"), acceptanceCriteria: ["refresh"] },
+        reason: "missing criteria",
+        policy: "auto-safe",
+      },
+    ]);
+    await artifacts.writeJson(analysisId, "reconciliation-report.json", report);
+
+    const result = await service().apply(analysisId, opts);
+
+    // The closed issue body must never be rewritten.
+    expect(github.updated.find((u) => u.number === 15)).toBeUndefined();
+    expect(result.summary.applied).toBe(0);
+    expect(result.entries[0]?.outcome).toMatchObject({ status: "skipped" });
+  });
+
+  it("skips an ADD_DEPENDENCY patch whose target issue is closed", async () => {
+    github.issues.set(12, epic());
+    github.issues.set(15, { ...issue15(), state: "closed" });
+    github.issues.set(16, makeIssue(16, "Session storage", "Implement sessions"));
+
+    const report = baseReport([
+      { type: "ADD_DEPENDENCY", issue: 15, dependsOn: 16, reason: "needs #16", policy: "auto-safe" },
+    ]);
+    await artifacts.writeJson(analysisId, "reconciliation-report.json", report);
+
+    const result = await service().apply(analysisId, opts);
+
+    expect(github.updated.find((u) => u.number === 15)).toBeUndefined();
+    expect(result.summary.applied).toBe(0);
+    expect(result.entries[0]?.outcome).toMatchObject({ status: "skipped" });
+  });
+
   it("writes the per-epic latest-apply index pointer on apply", async () => {
     github.issues.set(12, epic());
     github.issues.set(15, issue15());

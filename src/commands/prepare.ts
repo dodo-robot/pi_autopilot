@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { assertIssueActionable } from "../analysis/issue-set.js";
 import { loadRepositoryConfig } from "../config/load-config.js";
 import type { AutopilotConfig } from "../config/schema.js";
 import type { BrainstormerResult } from "../domain/contracts.js";
@@ -162,6 +163,10 @@ async function runPrepare(
 
   // Initial fetch: the base for the diff and the concurrent-edit guard.
   const issue = await github.getIssue(number);
+
+  // `prepare` mutates the issue body, so it only ever targets an open,
+  // unclaimed ticket.
+  await assertIssueActionable(issue, github);
 
   const ref = `${ctx.repository.owner}/${ctx.repository.repo}#${number}`;
   reporter?.line(`→ preparing execution contract for ${ref}`);

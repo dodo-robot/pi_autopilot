@@ -93,8 +93,14 @@ function readyResult(number: number): RefinerResult {
 
 class FakeGitHub implements GitHubPort {
   readonly mutationCalls: string[] = [];
+  /** issue number -> labels, for the agent:in-progress scope tests. */
+  labels = new Map<number, string[]>();
 
   constructor(private readonly issues: Map<number, GitHubIssue>) {}
+
+  async listLabels(number: number): Promise<string[]> {
+    return this.labels.get(number) ?? [];
+  }
 
   async getIssue(number: number): Promise<GitHubIssue> {
     const found = this.issues.get(number);
@@ -290,6 +296,42 @@ describe("BacklogAnalyst.analyzeIssues", () => {
       "backlog-report.json",
     );
     expect(persisted).toMatchObject({ analysisId: "analyze-test-1" });
+  });
+
+  it("excludes closed issues from analysis and from executable", async () => {
+    const issues = new Map<number, GitHubIssue>([
+      [1, makeIssue(1, CONTRACT_BODY)],
+      [2, makeIssue(2, CONTRACT_BODY, "closed")],
+    ]);
+    const { analyst } = makeHarness(issues, "analyze-closed");
+
+    const report = await analyst.analyzeIssues({
+      epicRef: null,
+      requestedRefs: [1, 2],
+    });
+
+    expect(report.executable).toEqual([1]);
+    expect(report.issues.map((r) => r.issueNumber)).toEqual([1]);
+    expect(report.needsWork).not.toContain(2);
+  });
+
+  it("analyzes an agent:in-progress issue but never marks it executable", async () => {
+    const issues = new Map<number, GitHubIssue>([
+      [1, makeIssue(1, CONTRACT_BODY)],
+      [2, makeIssue(2, CONTRACT_BODY)],
+    ]);
+    const { analyst, github } = makeHarness(issues, "analyze-in-progress");
+    github.labels.set(2, ["agent:in-progress"]);
+
+    const report = await analyst.analyzeIssues({
+      epicRef: null,
+      requestedRefs: [1, 2],
+    });
+
+    // Still visible in the read-only report (decision (b): no invisible issues).
+    expect(report.issues.map((r) => r.issueNumber).sort()).toEqual([1, 2]);
+    // But not offered for execution — the daemon already owns it.
+    expect(report.executable).toEqual([1]);
   });
 
   it("epic mode merges and de-dupes requested + epic refs", async () => {

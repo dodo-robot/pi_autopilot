@@ -9,6 +9,7 @@ import { PidFile } from "../daemon/pid-file.js";
 import { QueueStore } from "../daemon/queue-store.js";
 import { parseBacklogReport } from "../domain/backlog.js";
 import type { RepositoryRef } from "../domain/contracts.js";
+import { assertIssueActionable } from "../analysis/issue-set.js";
 import { GitHubAdapter } from "../github/github-adapter.js";
 import { resolveRepositoryContext } from "../github/repository-context.js";
 import { ProcessRunner } from "../platform/process-runner.js";
@@ -309,7 +310,9 @@ export function registerStartCommand(program: Command, deps: StartCommandDeps = 
           const verifyIssues = deps.verifyIssues ?? (async (issueNumbers: number[]) => {
             const github = await GitHubAdapter.create(ctx!.root, runner);
             for (const number of issueNumbers) {
-              await github.getIssue(number);
+              // Explicitly named issues must be open and unclaimed before the
+              // daemon is handed a queue containing them.
+              await assertIssueActionable(await github.getIssue(number), github);
             }
           });
           await verifyIssues(issues);

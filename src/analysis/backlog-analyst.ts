@@ -13,6 +13,7 @@ import {
   parseBacklogReport,
 } from "../domain/backlog.js";
 import { screenIssue, type ScreenDependency } from "./heuristic-screen.js";
+import { AGENT_IN_PROGRESS_LABEL } from "./label-reconciliation.js";
 import {
   dependencyNumberFromMatch,
   LINE_DEPENDENCY_PATTERN,
@@ -137,6 +138,19 @@ export class BacklogAnalyst {
     this.now = deps.now ?? (() => new Date().toISOString());
   }
 
+  /** True when the issue carries the daemon-owned `agent:in-progress` label.
+   * A label-read failure is treated as "not claimed": this check only ever
+   * removes an issue from `executable`, so failing open keeps analysis usable
+   * when label reads are unavailable. */
+  private async isInProgress(issueNumber: number): Promise<boolean> {
+    try {
+      const labels = await this.deps.github.listLabels(issueNumber);
+      return labels.includes(AGENT_IN_PROGRESS_LABEL);
+    } catch {
+      return false;
+    }
+  }
+
   async analyzeIssues({
     epicRef,
     requestedRefs,
@@ -208,7 +222,13 @@ export class BacklogAnalyst {
         readiness,
       });
 
-      if (classification === "READY") {
+      // An issue the daemon has already claimed (`agent:in-progress`) stays
+      // visible in this read-only report, but must never be offered for
+      // execution: `start --from-analyze` consumes `executable` directly, and
+      // handing back a claimed issue would run it twice.
+      const claimed = classification === "READY" && (await this.isInProgress(issue.number));
+
+      if (classification === "READY" && !claimed) {
         executable.push(issue.number);
       } else if (classification !== "SKIPPED") {
         needsWork.push(issue.number);
