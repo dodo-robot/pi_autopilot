@@ -343,7 +343,9 @@ label policy.
 
 Added an independent `verifier` role that runs after Reviewer approval, judging
 whether each acceptance criterion is satisfied using the diff and deterministic
-verification evidence. The Reviewer keeps judging engineering quality only.
+verification evidence. It supplements deterministic verification (`VerificationRunner`),
+which is unchanged, rather than replacing it. The Reviewer keeps judging
+engineering quality only.
 
 - New `verifier` role schema and prompt (transcript-free, no reviewer/implementer
   context)
