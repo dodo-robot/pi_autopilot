@@ -15,13 +15,25 @@ export type LabelAction = "labeled" | "unlabeled" | "unchanged" | "skipped-in-pr
  * the `split` label is a SPLIT_ISSUE tracking checklist, not a task — it
  * is always skipped ahead of every other check, since it can never be a
  * real "ready to run" candidate regardless of its content.
+ *
+ * A closed issue is handled first and unconditionally: `agent:ready` on
+ * finished work is actively misleading to anyone browsing GitHub, so it is
+ * stripped even when the issue is claimed or split, and never added back.
+ * Callers normally filter closed issues out upstream (`resolveIssueSet`);
+ * this check keeps the rule local to the decision rather than depending on
+ * a guarantee established in another module. `isClosed` is optional and
+ * defaults to open so existing callers keep their current behavior.
  */
 export function reconcileReadyLabel(input: {
+  isClosed?: boolean;
   isReady: boolean;
   hasReadyLabel: boolean;
   hasInProgressLabel: boolean;
   hasSplitLabel: boolean;
 }): LabelAction {
+  if (input.isClosed === true) {
+    return input.hasReadyLabel ? "unlabeled" : "unchanged";
+  }
   if (input.hasSplitLabel) return "skipped-split";
   if (input.hasInProgressLabel) return "skipped-in-progress";
   if (input.isReady && !input.hasReadyLabel) return "labeled";

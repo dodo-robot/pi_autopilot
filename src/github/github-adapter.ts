@@ -1,4 +1,7 @@
 import { Octokit } from "@octokit/rest";
+// Leaf constants module (no imports of its own), so this does not create a
+// cycle with analysis/ → github/.
+import { AGENT_READY_LABEL } from "../analysis/label-reconciliation.js";
 import type { ProcessRunner } from "../platform/process-runner.js";
 import {
   resolveRepositoryContext,
@@ -499,7 +502,22 @@ export class GitHubAdapter implements GitHubPort {
     }
   }
 
+  /**
+   * Adds a label. `agent:ready` is guarded at this chokepoint: it advertises
+   * an issue as available work, so it must never land on closed work no
+   * matter which caller asks. The state check runs only for that label, so
+   * ordinary label writes cost no extra API call.
+   */
   async addLabel(number: number, name: string): Promise<void> {
+    if (name === AGENT_READY_LABEL) {
+      const issue = await this.getIssue(number);
+      if (issue.state.toLowerCase() === "closed") {
+        throw new GitHubError(
+          `refusing to add "${name}" to issue #${number}: the issue is closed`,
+        );
+      }
+    }
+
     try {
       await this.octokit.rest.issues.addLabels({
         owner: this.owner,

@@ -54,6 +54,50 @@ describe("reconcileReadyLabel", () => {
     ).toBe("skipped-split");
   });
 
+  it("unlabels a closed issue carrying a stale agent:ready label", () => {
+    expect(
+      reconcileReadyLabel({
+        isClosed: true,
+        isReady: true,
+        hasReadyLabel: true,
+        hasInProgressLabel: false,
+        hasSplitLabel: false,
+      }),
+    ).toBe("unlabeled");
+  });
+
+  it("never labels a closed issue, even when it screens READY", () => {
+    expect(
+      reconcileReadyLabel({
+        isClosed: true,
+        isReady: true,
+        hasReadyLabel: false,
+        hasInProgressLabel: false,
+        hasSplitLabel: false,
+      }),
+    ).toBe("unchanged");
+  });
+
+  it("strips agent:ready from a closed issue even when it is claimed or split", () => {
+    // A closed issue is finished work: a lingering agent:ready is actively
+    // misleading, so removing it wins over the skip guards.
+    expect(
+      reconcileReadyLabel({
+        isClosed: true,
+        isReady: false,
+        hasReadyLabel: true,
+        hasInProgressLabel: true,
+        hasSplitLabel: true,
+      }),
+    ).toBe("unlabeled");
+  });
+
+  it("treats a missing isClosed as open, preserving existing behavior", () => {
+    expect(
+      reconcileReadyLabel({ isReady: true, hasReadyLabel: false, hasInProgressLabel: false, hasSplitLabel: false }),
+    ).toBe("labeled");
+  });
+
   it("prioritizes skipped-split over skipped-in-progress when both labels are present", () => {
     expect(
       reconcileReadyLabel({

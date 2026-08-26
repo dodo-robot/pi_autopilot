@@ -669,6 +669,63 @@ describe("GitHubAdapter label methods", () => {
     });
   });
 
+  it("refuses to add agent:ready to a closed issue", async () => {
+    const { octokit } = makeOctokit();
+    (octokit.rest.issues.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        number: 42,
+        node_id: "I_42",
+        title: "Add token refresh",
+        body: "Original body",
+        updated_at: "2026-08-18T00:00:00Z",
+        state: "closed",
+        html_url: "https://github.com/acme/widgets/issues/42",
+      },
+    });
+    const { github } = await makeAdapterLabel(octokit);
+
+    await expect(github.addLabel(42, "agent:ready")).rejects.toThrow(
+      /closed/i,
+    );
+    expect(octokit.rest.issues.addLabels).not.toHaveBeenCalled();
+  });
+
+  it("still allows non-readiness labels on a closed issue", async () => {
+    const { octokit } = makeOctokit();
+    (octokit.rest.issues.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        number: 42,
+        node_id: "I_42",
+        title: "Add token refresh",
+        body: "Original body",
+        updated_at: "2026-08-18T00:00:00Z",
+        state: "closed",
+        html_url: "https://github.com/acme/widgets/issues/42",
+      },
+    });
+    const { github } = await makeAdapterLabel(octokit);
+
+    await github.addLabel(42, "duplicate");
+
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalled();
+    // The guard must not cost a state fetch for unrelated labels.
+    expect(octokit.rest.issues.get).not.toHaveBeenCalled();
+  });
+
+  it("adds agent:ready to an open issue", async () => {
+    const { octokit } = makeOctokit();
+    const { github } = await makeAdapterLabel(octokit);
+
+    await github.addLabel(42, "agent:ready");
+
+    expect(octokit.rest.issues.addLabels).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "widgets",
+      issue_number: 42,
+      labels: ["agent:ready"],
+    });
+  });
+
   it("removes a label from an issue", async () => {
     const { octokit } = makeOctokit();
     const { github } = await makeAdapterLabel(octokit);
