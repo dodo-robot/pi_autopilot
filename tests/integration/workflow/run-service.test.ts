@@ -275,7 +275,6 @@ function implementerFailed(reason = "unexpected error"): ImplementerResult {
 function reviewerApproved(): ReviewerResult {
   return {
     outcome: "APPROVED",
-    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
   };
 }
@@ -304,7 +303,6 @@ function verifierProductAmbiguity(reason = "ambiguous acceptance criteria"): Ver
 function reviewerChangesRequested(note = "needs work"): ReviewerResult {
   return {
     outcome: "CHANGES_REQUESTED",
-    criteriaResults: [{ criterionId: "ac1", passed: false, notes: note }],
     findings: [
       {
         severity: "critical",

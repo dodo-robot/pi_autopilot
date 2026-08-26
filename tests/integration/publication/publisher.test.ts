@@ -380,7 +380,7 @@ describe("Publisher", () => {
     });
 
     await publisher.publish({
-        acceptance: verifiedAcceptance(),
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-checklist",
       issueNumber: 42,
       workspace,
@@ -425,7 +425,7 @@ describe("Publisher", () => {
     });
 
     const result = await publisher.publish({
-        acceptance: verifiedAcceptance(),
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-4",
       issueNumber: 42,
       workspace,
@@ -522,7 +522,7 @@ describe("Publisher", () => {
     });
 
     const result = await publisher.publish({
-        acceptance: verifiedAcceptance(),
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-5",
       issueNumber: 42,
       workspace,
@@ -587,7 +587,7 @@ describe("Publisher", () => {
     });
 
     const result = await publisher.publish({
-        acceptance: verifiedAcceptance(),
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-6",
       issueNumber: 42,
       workspace,
@@ -640,7 +640,7 @@ describe("Publisher", () => {
     });
 
     await publisher.publish({
-        acceptance: verifiedAcceptance(),
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-7",
       issueNumber: 42,
       workspace,

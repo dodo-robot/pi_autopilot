@@ -196,7 +196,6 @@ function implementerBlocked(reason = "cannot proceed"): ImplementerResult {
 function reviewerApproved(): ReviewerResult {
   return {
     outcome: "APPROVED",
-    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
   };
 }

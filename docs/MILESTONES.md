@@ -356,6 +356,8 @@ engineering quality only.
 
 See spec: `docs/superpowers/specs/2026-08-26-dedicated-verifier-role-design.md`.
 
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and

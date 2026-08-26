@@ -207,7 +207,6 @@ describe("safety and recovery acceptance", () => {
     });
     const changesRequested = (note: string) => ({
       outcome: "CHANGES_REQUESTED",
-      criteriaResults: [{ criterionId: "ac1", passed: false, notes: "not yet" }],
       findings: [
         {
           severity: "important" as const,
@@ -257,7 +256,6 @@ describe("safety and recovery acceptance", () => {
           action: "result",
           payload: {
             outcome: "APPROVED",
-            criteriaResults: [{ criterionId: "ac1", passed: true, notes: "now verified" }],
             findings: [],
           },
         },
@@ -293,7 +291,6 @@ describe("safety and recovery acceptance", () => {
     });
     const changesRequested = (note: string) => ({
       outcome: "CHANGES_REQUESTED",
-      criteriaResults: [{ criterionId: "ac1", passed: false, notes: note }],
       findings: [
         {
           severity: "important" as const,

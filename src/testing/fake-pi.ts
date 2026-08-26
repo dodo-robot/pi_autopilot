@@ -50,7 +50,7 @@ import {
   evaluateShellCommand,
 } from "../security/command-policy.js";
 
-export type FakeRole = "refiner" | "implementer" | "reviewer";
+export type FakeRole = "refiner" | "implementer" | "reviewer" | "verifier";
 
 export type FakeAction =
   | "result"
@@ -153,8 +153,11 @@ const DEFAULT_PAYLOADS: Record<FakeRole, unknown> = {
   },
   reviewer: {
     outcome: "APPROVED",
-    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
+  },
+  verifier: {
+    outcome: "VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
   },
 };
 

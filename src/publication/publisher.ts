@@ -83,8 +83,8 @@ function renderPrBody(input: {
     .join("\n");
 
   const reviewSummary = review.outcome === "APPROVED"
-    ? "Reviewer outcome: **APPROVED**"
-    : `Reviewer outcome: ${review.outcome}`;
+    ? "Engineering-quality review: **APPROVED**"
+    : `Engineering-quality review: ${review.outcome}`;
 
   const acceptanceSummary = acceptance.outcome === "VERIFIED"
     ? "Acceptance verification: **VERIFIED** (independent of the engineering-quality review above)"
