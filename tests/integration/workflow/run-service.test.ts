@@ -1121,4 +1121,55 @@ describe("RunService.resume", () => {
     ]);
     runStore2.close();
   });
+
+  it("resumes a FAILED run at ACCEPTANCE_VERIFICATION by re-verifying, re-reviewing, and launching a fresh verifier", async () => {
+    const harness = await makeHarness("run-fixture-resume-failed-acceptance");
+    harness.pi.script("refiner", [
+      taskSnapshotRefiner("run-fixture-resume-failed-acceptance"),
+    ]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    const service = new RunService(harness.deps);
+    const throwingPi: RunPiRunner = {
+      run: async (request) => {
+        if (request.role === "verifier") {
+          throw new PiRunError("verifier session exited with code 2", "verifier", {
+            stdout: "",
+            stderr: "",
+            resultPath: path.join(request.diagnosticsDir, "result.json"),
+          });
+        }
+        return harness.pi.run(request);
+      },
+    };
+    const failingDeps: RunServiceDeps = { ...harness.deps, createPi: () => throwingPi };
+    const failingService = new RunService(failingDeps);
+    const failed = await failingService.start(42);
+
+    expect(failed.stage).toBe("FAILED");
+    const runStore = harness.openRunStore();
+    expect(runStore.getRun(failed.runId)!.resumeAt).toBe("ACCEPTANCE_VERIFICATION");
+    expect(runStore.listAttempts(failed.runId).map((a) => a.role)).toEqual([
+      "implementer",
+      "reviewer",
+    ]);
+    runStore.close();
+
+    // Resume: re-verify (passes), re-review (approves again, since it's a
+    // fresh transcript-free session), then launch a fresh verifier that
+    // verifies. No new implementer session.
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
+    const resumedService = new RunService(harness.deps);
+    const resumed = await resumedService.resume(failed.runId);
+
+    expect(resumed.stage).toBe("PR_OPEN");
+    const runStore2 = harness.openRunStore();
+    const attempts = runStore2.listAttempts(failed.runId).map((a) => a.role);
+    expect(attempts).toEqual(["implementer", "reviewer", "reviewer", "verifier"]);
+    expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(1);
+    expect(harness.pi.requests.filter((r) => r.role === "verifier")).toHaveLength(1);
+    runStore2.close();
+  });
+
 });
