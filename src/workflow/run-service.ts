@@ -59,6 +59,7 @@ export interface RunOverrides {
   refiner?: RoleModelOverride;
   implementer?: RoleModelOverride;
   reviewer?: RoleModelOverride;
+  verifier?: RoleModelOverride;
   refinerTimeoutMs?: number;
 }
 
@@ -102,6 +103,12 @@ export interface RunServiceDeps {
 type ReviewOutcome =
   | { kind: "approved"; review: Extract<ReviewerResult, { outcome: "APPROVED" }> }
   | { kind: "changes-requested"; review: Extract<ReviewerResult, { outcome: "CHANGES_REQUESTED" }> }
+  | { kind: "terminal"; summary: RunSummary };
+
+/** Resolution of one verifier session, consumed by the approved branch of `runImplementationLoop`/`executeResume`. */
+type AcceptanceOutcome =
+  | { kind: "verified"; result: Extract<VerifierResult, { outcome: "VERIFIED" }> }
+  | { kind: "not-verified"; result: Extract<VerifierResult, { outcome: "NOT_VERIFIED" }> }
   | { kind: "terminal"; summary: RunSummary };
 
 const DEFAULT_ROLE_TIMEOUT_MS = 60 * 60_000;
@@ -165,6 +172,13 @@ export class RunService {
       null,
       piDefault,
     );
+    const verifierModel = resolveRoleModel(
+      "verifier",
+      overrides.verifier ?? null,
+      config.agents,
+      null,
+      piDefault,
+    );
 
     try {
       const active = runStore.getActiveRunForIssue(
@@ -198,6 +212,7 @@ export class RunService {
         refinerModel,
         implementerModel,
         reviewerModel,
+        verifierModel,
         overrides,
         ...(this.deps.onProgress === undefined ? {} : { onProgress: this.deps.onProgress }),
       });
@@ -262,6 +277,13 @@ export class RunService {
     const reviewerModel = resolveRoleModel(
       "reviewer",
       overrides.reviewer ?? null,
+      config.agents,
+      null,
+      piDefault,
+    );
+    const verifierModel = resolveRoleModel(
+      "verifier",
+      overrides.verifier ?? null,
       config.agents,
       null,
       piDefault,
@@ -338,6 +360,7 @@ export class RunService {
         refinerModel,
         implementerModel,
         reviewerModel,
+        verifierModel,
         overrides,
         initialCounters,
         initialAttemptSequence,
@@ -363,6 +386,7 @@ interface RunAttemptDeps {
   refinerModel: ResolvedRoleModel;
   implementerModel: ResolvedRoleModel;
   reviewerModel: ResolvedRoleModel;
+  verifierModel: ResolvedRoleModel;
   overrides: RunOverrides;
   onProgress?: (text: string) => void;
   /**
@@ -514,13 +538,32 @@ class RunAttempt {
       const reviewOutcome = await this.runReview(snapshot, workspace, verification);
       if (reviewOutcome.kind === "terminal") return reviewOutcome.summary;
       if (reviewOutcome.kind === "approved") {
-        return await this.publishRun(
+        const acceptanceOutcome = await this.runAcceptanceVerification(
+          snapshot,
+          workspace,
+          verification,
+        );
+        if (acceptanceOutcome.kind === "terminal") return acceptanceOutcome.summary;
+        if (acceptanceOutcome.kind === "verified") {
+          return await this.publishRun(
+            snapshot,
+            workspace,
+            workspaceManager,
+            verification,
+            reviewOutcome.review,
+            acceptanceOutcome.result,
+            synthesizedImplementer,
+          );
+        }
+        // NOT_VERIFIED with budget remaining: re-enter IMPLEMENTATION and
+        // loop with the acceptance-correction prompt.
+        this.transition("IMPLEMENTATION", null);
+        return await this.runImplementationLoop(
           snapshot,
           workspace,
           workspaceManager,
-          verification,
-          reviewOutcome.review,
-          synthesizedImplementer,
+          verificationRunner,
+          buildAcceptanceCorrectionPrompt(snapshot, acceptanceOutcome.result),
         );
       }
       // CHANGES_REQUESTED: bounded correction loop. runReview already
@@ -678,14 +721,28 @@ class RunAttempt {
       const reviewOutcome = await this.runReview(snapshot, workspace, verification);
       if (reviewOutcome.kind === "terminal") return reviewOutcome.summary;
       if (reviewOutcome.kind === "approved") {
-        return await this.publishRun(
+        const acceptanceOutcome = await this.runAcceptanceVerification(
           snapshot,
           workspace,
-          workspaceManager,
           verification,
-          reviewOutcome.review,
-          implementerResult,
         );
+        if (acceptanceOutcome.kind === "terminal") return acceptanceOutcome.summary;
+        if (acceptanceOutcome.kind === "verified") {
+          return await this.publishRun(
+            snapshot,
+            workspace,
+            workspaceManager,
+            verification,
+            reviewOutcome.review,
+            acceptanceOutcome.result,
+            implementerResult,
+          );
+        }
+        // NOT_VERIFIED with budget remaining: loop back for one more
+        // correction attempt, transitioning back through IMPLEMENTATION.
+        this.transition("IMPLEMENTATION", null);
+        prompt = buildAcceptanceCorrectionPrompt(snapshot, acceptanceOutcome.result);
+        continue;
       }
       // CHANGES_REQUESTED with budget remaining: loop back for one more
       // correction attempt, transitioning back through IMPLEMENTATION.
@@ -941,12 +998,101 @@ class RunAttempt {
     return execution.result as ReviewerResult;
   }
 
+  private async launchVerifier(
+    snapshot: TaskSnapshot,
+    workspace: Workspace,
+    verification: VerificationEvidence,
+  ): Promise<VerifierResult> {
+    const attemptDir = path.join(
+      this.deps.paths.runDir(this.runId),
+      `verifier-${String(this.counters.correctionCycles)}`,
+    );
+    // See the comment in launchImplementer: a PiRunError propagates to
+    // execute()'s top-level catch, which persists it as FAILED.
+    const execution = await this.deps.pi.run({
+      role: "verifier",
+      model: this.deps.verifierModel,
+      prompt: buildVerifierPrompt(snapshot, verification),
+      worktree: workspace.path,
+      allowedCommands: [],
+      protectedPaths: this.deps.config.agentPolicy.protectedPaths,
+      sessionDir: path.join(attemptDir, "session"),
+      diagnosticsDir: path.join(attemptDir, "diagnostics"),
+      env: safeProcessEnv(),
+      timeoutMs: this.deps.config.budgets.review.timeoutMinutes * 60_000,
+    });
+    this.attemptSequence += 1;
+    this.deps.runStore.recordAttempt({
+      runId: this.runId,
+      role: "verifier",
+      attemptNumber: this.attemptSequence,
+      model: this.deps.verifierModel.model,
+      thinking: this.deps.verifierModel.thinking,
+    });
+    return execution.result as VerifierResult;
+  }
+
+  /**
+   * Launch exactly one fresh, transcript-free verifier session, called only
+   * after the reviewer has already approved. Mirrors `runReview`'s shape:
+   * never loops itself; the caller owns re-entering IMPLEMENTATION for a
+   * NOT_VERIFIED correction attempt.
+   */
+  private async runAcceptanceVerification(
+    snapshot: TaskSnapshot,
+    workspace: Workspace,
+    verification: VerificationEvidence,
+  ): Promise<AcceptanceOutcome> {
+    this.transition("ACCEPTANCE_VERIFICATION", null);
+    const acceptance = await this.launchVerifier(snapshot, workspace, verification);
+
+    if (acceptance.outcome === "VERIFIED") {
+      return { kind: "verified", result: acceptance };
+    }
+
+    const ref = await this.deps.artifacts.writeJson(
+      this.runId,
+      `acceptance-${String(this.counters.correctionCycles)}.json`,
+      acceptance,
+    );
+
+    if (acceptance.outcome === "PRODUCT_AMBIGUITY") {
+      this.transition("NEEDS_REFINEMENT", ref.relative);
+      return { kind: "terminal", summary: this.summary({ reason: acceptance.reason }) };
+    }
+    if (acceptance.outcome === "FAILED") {
+      this.transition("FAILED", ref.relative);
+      return { kind: "terminal", summary: this.summary({ reason: acceptance.reason }) };
+    }
+
+    // NOT_VERIFIED: bounded by the shared correction-cycle budget.
+    const findings = acceptance.findings.map(
+      (f) => `${f.criterionId}:${f.evidence}:${f.notes}`,
+    );
+    const decision = this.budgets.recordFailure({
+      stage: "ACCEPTANCE_VERIFICATION",
+      command: "acceptance-verification",
+      exitCode: 1,
+      findings,
+    });
+
+    if (decision.decision !== "CONTINUE") {
+      this.transition("BLOCKED", ref.relative);
+      return { kind: "terminal", summary: this.summary({ reason: decision.reason }) };
+    }
+
+    this.counters.correctionCycles += 1;
+    this.transition("CORRECTION", ref.relative);
+    return { kind: "not-verified", result: acceptance };
+  }
+
   private async publishRun(
     snapshot: TaskSnapshot,
     workspace: Workspace,
     workspaceManager: WorkspaceManager,
     verification: VerificationEvidence,
     review: Extract<ReviewerResult, { outcome: "APPROVED" }>,
+    acceptance: Extract<VerifierResult, { outcome: "VERIFIED" }>,
     implementerResult: ImplementerResult,
   ): Promise<RunSummary> {
     const issue = await this.deps.github.getIssue(this.deps.run.issueNumber);

@@ -6,6 +6,7 @@ import type {
   ImplementerResult,
   ReviewerResult,
   Role,
+  VerifierResult,
 } from "../../../src/domain/contracts.js";
 import type {
   CreatePullRequestInput,
@@ -279,6 +280,13 @@ function reviewerApproved(): ReviewerResult {
   };
 }
 
+function verifierVerified(): VerifierResult {
+  return {
+    outcome: "VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
+  };
+}
+
 function reviewerChangesRequested(note = "needs work"): ReviewerResult {
   return {
     outcome: "CHANGES_REQUESTED",
@@ -396,6 +404,7 @@ describe("RunService", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     const service = new RunService(harness.deps);
     const summary = await service.start(42);
@@ -410,6 +419,7 @@ describe("RunService", () => {
       "IMPLEMENTATION",
       "VERIFICATION",
       "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
       "PUBLICATION",
       "PR_OPEN",
     ]);
@@ -438,6 +448,42 @@ describe("RunService", () => {
     expect(harness.github.pulls.size).toBe(1);
     expect(harness.github.comments).toHaveLength(1);
     expect(harness.github.updateIssueBodyCalls).toEqual([]);
+
+    runStore.close();
+  });
+
+  it("runs a verifier session after reviewer approval, before publication", async () => {
+    const harness = await makeHarness("run-fixture-verifier-happy");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-verifier-happy")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("PR_OPEN");
+
+    const runStore = harness.openRunStore();
+    const transitions = runStore.transitions(summary.runId).map((t) => t.to);
+    expect(transitions).toEqual([
+      "READINESS_CHECK",
+      "WORKSPACE_CREATION",
+      "IMPLEMENTATION",
+      "VERIFICATION",
+      "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
+      "PUBLICATION",
+      "PR_OPEN",
+    ]);
+
+    // The verifier is independent: its own session, no reviewer/implementer
+    // transcript leaking into its prompt.
+    const reviewerRequests = harness.pi.requests.filter((r) => r.role === "reviewer");
+    const verifierRequests = harness.pi.requests.filter((r) => r.role === "verifier");
+    expect(verifierRequests).toHaveLength(1);
+    expect(verifierRequests[0]!.sessionDir).not.toBe(reviewerRequests[0]!.sessionDir);
+    expect(verifierRequests[0]!.prompt).not.toContain("APPROVED");
 
     runStore.close();
   });
@@ -512,6 +558,7 @@ describe("RunService", () => {
       { result: implementerCompleted({ summary: "Fixed it." }), passVerification: true },
     ]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     const service = new RunService(harness.deps);
     const summary = await service.start(42);
@@ -526,6 +573,7 @@ describe("RunService", () => {
       "IMPLEMENTATION",
       "VERIFICATION",
       "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
       "PUBLICATION",
       "PR_OPEN",
     ]);
@@ -639,6 +687,7 @@ describe("RunService", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-changed-issue")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     // Simulate a concurrent edit to the issue discovered only when the
     // orchestrator re-fetches it right before publication.
@@ -742,6 +791,7 @@ describe("RunService", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-github-error")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     const retryDeps: RunServiceDeps = { ...harness.deps, idFactory: () => "run-test-2" };
     const retryService = new RunService(retryDeps);
     const retry = await retryService.start(42);
@@ -788,6 +838,7 @@ describe("RunService.resume", () => {
     // Resume with a fresh implementer response that completes the work.
     harness.pi.script("implementer", [implementerCompleted({ summary: "Resumed and finished." })]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     const resumed = await service.resume(blocked.runId);
 
@@ -804,6 +855,7 @@ describe("RunService.resume", () => {
       "IMPLEMENTATION",
       "VERIFICATION",
       "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
       "PUBLICATION",
       "PR_OPEN",
     ]);
@@ -821,6 +873,7 @@ describe("RunService.resume", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-resume-not-blocked")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     const service = new RunService(harness.deps);
     const summary = await service.start(42);
@@ -879,16 +932,19 @@ describe("RunService.resume", () => {
     // on the existing work (still passing), then launch a fresh reviewer
     // that approves. No new implementer session may be started.
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     const resumedService = new RunService(harness.deps);
     const resumed = await resumedService.resume(failed.runId);
 
     expect(resumed.stage).toBe("PR_OPEN");
     const runStore2 = harness.openRunStore();
     const attempts = runStore2.listAttempts(failed.runId).map((a) => a.role);
-    // No second implementer attempt; exactly one reviewer attempt recorded.
-    expect(attempts).toEqual(["implementer", "reviewer"]);
+    // No second implementer attempt; exactly one reviewer and one verifier
+    // attempt recorded on the resumed run.
+    expect(attempts).toEqual(["implementer", "reviewer", "verifier"]);
     expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(1);
     expect(harness.pi.requests.filter((r) => r.role === "reviewer")).toHaveLength(1);
+    expect(harness.pi.requests.filter((r) => r.role === "verifier")).toHaveLength(1);
     expect(runStore2.transitions(failed.runId).map((t) => t.to)).toEqual([
       "READINESS_CHECK",
       "WORKSPACE_CREATION",
@@ -898,6 +954,7 @@ describe("RunService.resume", () => {
       "FAILED",
       "VERIFICATION",
       "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
       "PUBLICATION",
       "PR_OPEN",
     ]);

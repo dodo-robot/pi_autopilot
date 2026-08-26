@@ -8,6 +8,7 @@ import type {
   ImplementerResult,
   ReviewerResult,
   Role,
+  VerifierResult,
 } from "../../../src/domain/contracts.js";
 import type {
   CreatePullRequestInput,
@@ -200,6 +201,13 @@ function reviewerApproved(): ReviewerResult {
   };
 }
 
+function verifierVerified(): VerifierResult {
+  return {
+    outcome: "VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
+  };
+}
+
 let tempDirs: string[] = [];
 
 async function git(cwd: string, args: string[]): Promise<void> {
@@ -324,6 +332,7 @@ describe("autopilot status", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner()]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     await harness.run(["run", "42"]);
     const runId = /Run: (\S+)/.exec(harness.stdoutLines.join("\n"))![1]!;
     harness.stdoutLines.length = 0;
@@ -443,6 +452,7 @@ describe("autopilot resume", () => {
 
     harness.pi.script("implementer", [implementerCompleted({ summary: "Resumed." })]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     harness.stdoutLines.length = 0;
     harness.exitCodes.length = 0;
 
@@ -462,6 +472,7 @@ describe("autopilot resume", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner()]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     await harness.run(["run", "42"]);
     const runId = /Run: (\S+)/.exec(harness.stdoutLines.join("\n"))![1]!;
     harness.stdoutLines.length = 0;
@@ -480,6 +491,7 @@ describe("autopilot resume", () => {
 
     harness.pi.script("implementer", [implementerCompleted({ summary: "Resumed." })]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     await harness.run(["resume", runId, "--model", "openai/gpt-5.2", "--thinking", "high"]);
 
