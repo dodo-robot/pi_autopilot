@@ -1130,6 +1130,7 @@ class RunAttempt {
       workspace,
       taskSnapshot: snapshot,
       review,
+      acceptance,
       verification,
       implementationSummary,
       config: {
