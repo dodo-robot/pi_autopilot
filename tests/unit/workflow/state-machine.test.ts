@@ -23,8 +23,13 @@ describe("assertTransition", () => {
     ["VERIFICATION", "IMPLEMENTATION"],
     ["VERIFICATION", "BLOCKED"],
     ["VERIFICATION", "FAILED"],
-    ["INDEPENDENT_REVIEW", "PUBLICATION"],
+    ["INDEPENDENT_REVIEW", "ACCEPTANCE_VERIFICATION"],
     ["INDEPENDENT_REVIEW", "CORRECTION"],
+    ["ACCEPTANCE_VERIFICATION", "PUBLICATION"],
+    ["ACCEPTANCE_VERIFICATION", "CORRECTION"],
+    ["ACCEPTANCE_VERIFICATION", "NEEDS_REFINEMENT"],
+    ["ACCEPTANCE_VERIFICATION", "BLOCKED"],
+    ["ACCEPTANCE_VERIFICATION", "FAILED"],
     ["INDEPENDENT_REVIEW", "NEEDS_REFINEMENT"],
     ["INDEPENDENT_REVIEW", "BLOCKED"],
     ["INDEPENDENT_REVIEW", "FAILED"],
@@ -58,6 +63,12 @@ describe("assertTransition", () => {
 
   it("rejects VERIFICATION -> PUBLICATION (must pass through INDEPENDENT_REVIEW)", () => {
     expect(() => assertTransition("VERIFICATION", "PUBLICATION")).toThrow(
+      "illegal transition",
+    );
+  });
+
+  it("rejects INDEPENDENT_REVIEW -> PUBLICATION (must pass through ACCEPTANCE_VERIFICATION)", () => {
+    expect(() => assertTransition("INDEPENDENT_REVIEW", "PUBLICATION")).toThrow(
       "illegal transition",
     );
   });
@@ -151,13 +162,13 @@ describe("nextStage", () => {
     ).toBe("IMPLEMENTATION");
   });
 
-  it("moves INDEPENDENT_REVIEW -> PUBLICATION on REVIEW_RESULT APPROVED", () => {
+  it("moves INDEPENDENT_REVIEW -> ACCEPTANCE_VERIFICATION on REVIEW_RESULT APPROVED", () => {
     expect(
       nextStage(
         { type: "REVIEW_RESULT", outcome: "APPROVED" },
         { stage: "INDEPENDENT_REVIEW", correctionCycles: 0 },
       ),
-    ).toBe("PUBLICATION");
+    ).toBe("ACCEPTANCE_VERIFICATION");
   });
 
   it("moves INDEPENDENT_REVIEW -> CORRECTION on REVIEW_RESULT CHANGES_REQUESTED when a cycle remains", () => {
@@ -185,6 +196,51 @@ describe("nextStage", () => {
         { stage: "INDEPENDENT_REVIEW", correctionCycles: 0 },
       ),
     ).toBe("FAILED");
+  });
+
+  it("moves ACCEPTANCE_VERIFICATION -> PUBLICATION on ACCEPTANCE_RESULT VERIFIED", () => {
+    expect(
+      nextStage(
+        { type: "ACCEPTANCE_RESULT", outcome: "VERIFIED" },
+        { stage: "ACCEPTANCE_VERIFICATION", correctionCycles: 0 },
+      ),
+    ).toBe("PUBLICATION");
+  });
+
+  it("moves ACCEPTANCE_VERIFICATION -> CORRECTION on ACCEPTANCE_RESULT NOT_VERIFIED", () => {
+    expect(
+      nextStage(
+        { type: "ACCEPTANCE_RESULT", outcome: "NOT_VERIFIED" },
+        { stage: "ACCEPTANCE_VERIFICATION", correctionCycles: 0 },
+      ),
+    ).toBe("CORRECTION");
+  });
+
+  it("moves ACCEPTANCE_VERIFICATION -> NEEDS_REFINEMENT on ACCEPTANCE_RESULT PRODUCT_AMBIGUITY", () => {
+    expect(
+      nextStage(
+        { type: "ACCEPTANCE_RESULT", outcome: "PRODUCT_AMBIGUITY" },
+        { stage: "ACCEPTANCE_VERIFICATION", correctionCycles: 0 },
+      ),
+    ).toBe("NEEDS_REFINEMENT");
+  });
+
+  it("moves ACCEPTANCE_VERIFICATION -> FAILED on ACCEPTANCE_RESULT FAILED", () => {
+    expect(
+      nextStage(
+        { type: "ACCEPTANCE_RESULT", outcome: "FAILED" },
+        { stage: "ACCEPTANCE_VERIFICATION", correctionCycles: 0 },
+      ),
+    ).toBe("FAILED");
+  });
+
+  it("allows RESUME into ACCEPTANCE_VERIFICATION from FAILED", () => {
+    expect(
+      nextStage(
+        { type: "RESUME", resumeTo: "ACCEPTANCE_VERIFICATION" },
+        { stage: "FAILED", correctionCycles: 0 },
+      ),
+    ).toBe("ACCEPTANCE_VERIFICATION");
   });
 
   it("moves CORRECTION -> IMPLEMENTATION on CORRECTION_STARTED", () => {

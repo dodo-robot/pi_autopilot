@@ -6,6 +6,7 @@ import type {
   ImplementerResult,
   ReviewerResult,
   Role,
+  VerifierResult,
 } from "../../../src/domain/contracts.js";
 import type {
   CreatePullRequestInput,
@@ -274,15 +275,34 @@ function implementerFailed(reason = "unexpected error"): ImplementerResult {
 function reviewerApproved(): ReviewerResult {
   return {
     outcome: "APPROVED",
-    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
   };
+}
+
+function verifierVerified(): VerifierResult {
+  return {
+    outcome: "VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
+  };
+}
+
+function verifierNotVerified(note = "no evidence in diff"): VerifierResult {
+  return {
+    outcome: "NOT_VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: false, notes: note }],
+    findings: [
+      { criterionId: "ac1", evidence: note, notes: `unresolved: ${note}` },
+    ],
+  };
+}
+
+function verifierProductAmbiguity(reason = "ambiguous acceptance criteria"): VerifierResult {
+  return { outcome: "PRODUCT_AMBIGUITY", reason };
 }
 
 function reviewerChangesRequested(note = "needs work"): ReviewerResult {
   return {
     outcome: "CHANGES_REQUESTED",
-    criteriaResults: [{ criterionId: "ac1", passed: false, notes: note }],
     findings: [
       {
         severity: "critical",
@@ -396,6 +416,7 @@ describe("RunService", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     const service = new RunService(harness.deps);
     const summary = await service.start(42);
@@ -410,6 +431,7 @@ describe("RunService", () => {
       "IMPLEMENTATION",
       "VERIFICATION",
       "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
       "PUBLICATION",
       "PR_OPEN",
     ]);
@@ -440,6 +462,110 @@ describe("RunService", () => {
     expect(harness.github.updateIssueBodyCalls).toEqual([]);
 
     runStore.close();
+  });
+
+  it("runs a verifier session after reviewer approval, before publication", async () => {
+    const harness = await makeHarness("run-fixture-verifier-happy");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-verifier-happy")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("PR_OPEN");
+
+    const runStore = harness.openRunStore();
+    const transitions = runStore.transitions(summary.runId).map((t) => t.to);
+    expect(transitions).toEqual([
+      "READINESS_CHECK",
+      "WORKSPACE_CREATION",
+      "IMPLEMENTATION",
+      "VERIFICATION",
+      "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
+      "PUBLICATION",
+      "PR_OPEN",
+    ]);
+
+    // The verifier is independent: its own session, no reviewer/implementer
+    // transcript leaking into its prompt.
+    const reviewerRequests = harness.pi.requests.filter((r) => r.role === "reviewer");
+    const verifierRequests = harness.pi.requests.filter((r) => r.role === "verifier");
+    expect(verifierRequests).toHaveLength(1);
+    expect(verifierRequests[0]!.sessionDir).not.toBe(reviewerRequests[0]!.sessionDir);
+    expect(verifierRequests[0]!.prompt).not.toContain("APPROVED");
+
+    runStore.close();
+  });
+
+  it("loops back through implementation on verifier NOT_VERIFIED, then publishes once verified", async () => {
+    const harness = await makeHarness("run-fixture-verifier-not-verified");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-verifier-not-verified")]);
+    harness.pi.script("implementer", [
+      implementerCompleted(),
+      implementerCompleted({ summary: "Addressed verifier findings." }),
+    ]);
+    harness.pi.script("reviewer", [reviewerApproved(), reviewerApproved()]);
+    harness.pi.script("verifier", [verifierNotVerified(), verifierVerified()]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("PR_OPEN");
+    const runStore = harness.openRunStore();
+    const transitions = runStore.transitions(summary.runId).map((t) => t.to);
+    expect(transitions.filter((s) => s === "ACCEPTANCE_VERIFICATION")).toHaveLength(2);
+    expect(transitions.filter((s) => s === "CORRECTION")).toHaveLength(1);
+    expect(harness.pi.requests.filter((r) => r.role === "verifier")).toHaveLength(2);
+    expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(2);
+    runStore.close();
+  });
+
+  it("blocks after two acceptance-verification correction cycles are exhausted", async () => {
+    const harness = await makeHarness("run-fixture-verifier-exhausted");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-verifier-exhausted")]);
+    harness.pi.script("implementer", [
+      implementerCompleted(),
+      implementerCompleted({ summary: "Correction 1." }),
+      implementerCompleted({ summary: "Correction 2." }),
+    ]);
+    harness.pi.script("reviewer", [
+      reviewerApproved(),
+      reviewerApproved(),
+      reviewerApproved(),
+    ]);
+    harness.pi.script("verifier", [
+      verifierNotVerified("issue A"),
+      verifierNotVerified("issue B"),
+      verifierNotVerified("issue C"),
+    ]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("BLOCKED");
+    const runStore = harness.openRunStore();
+    const transitions = runStore.transitions(summary.runId).map((t) => t.to);
+    expect(transitions.filter((s) => s === "CORRECTION")).toHaveLength(2);
+    expect(transitions.at(-1)).toBe("BLOCKED");
+    expect(harness.github.pulls.size).toBe(0);
+    runStore.close();
+  });
+
+  it("reaches NEEDS_REFINEMENT on verifier PRODUCT_AMBIGUITY", async () => {
+    const harness = await makeHarness("run-fixture-verifier-ambiguous");
+    harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-verifier-ambiguous")]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierProductAmbiguity()]);
+
+    const service = new RunService(harness.deps);
+    const summary = await service.start(42);
+
+    expect(summary.stage).toBe("NEEDS_REFINEMENT");
+    expect(summary.reason).toBe("ambiguous acceptance criteria");
   });
 
   it("blocks at NEEDS_REFINEMENT when the deterministic readiness gate does not pass", async () => {
@@ -512,6 +638,7 @@ describe("RunService", () => {
       { result: implementerCompleted({ summary: "Fixed it." }), passVerification: true },
     ]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     const service = new RunService(harness.deps);
     const summary = await service.start(42);
@@ -526,6 +653,7 @@ describe("RunService", () => {
       "IMPLEMENTATION",
       "VERIFICATION",
       "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
       "PUBLICATION",
       "PR_OPEN",
     ]);
@@ -639,6 +767,7 @@ describe("RunService", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-changed-issue")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     // Simulate a concurrent edit to the issue discovered only when the
     // orchestrator re-fetches it right before publication.
@@ -742,6 +871,7 @@ describe("RunService", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-github-error")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     const retryDeps: RunServiceDeps = { ...harness.deps, idFactory: () => "run-test-2" };
     const retryService = new RunService(retryDeps);
     const retry = await retryService.start(42);
@@ -788,6 +918,7 @@ describe("RunService.resume", () => {
     // Resume with a fresh implementer response that completes the work.
     harness.pi.script("implementer", [implementerCompleted({ summary: "Resumed and finished." })]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     const resumed = await service.resume(blocked.runId);
 
@@ -804,6 +935,7 @@ describe("RunService.resume", () => {
       "IMPLEMENTATION",
       "VERIFICATION",
       "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
       "PUBLICATION",
       "PR_OPEN",
     ]);
@@ -821,6 +953,7 @@ describe("RunService.resume", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-fixture-resume-not-blocked")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     const service = new RunService(harness.deps);
     const summary = await service.start(42);
@@ -879,16 +1012,19 @@ describe("RunService.resume", () => {
     // on the existing work (still passing), then launch a fresh reviewer
     // that approves. No new implementer session may be started.
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     const resumedService = new RunService(harness.deps);
     const resumed = await resumedService.resume(failed.runId);
 
     expect(resumed.stage).toBe("PR_OPEN");
     const runStore2 = harness.openRunStore();
     const attempts = runStore2.listAttempts(failed.runId).map((a) => a.role);
-    // No second implementer attempt; exactly one reviewer attempt recorded.
-    expect(attempts).toEqual(["implementer", "reviewer"]);
+    // No second implementer attempt; exactly one reviewer and one verifier
+    // attempt recorded on the resumed run.
+    expect(attempts).toEqual(["implementer", "reviewer", "verifier"]);
     expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(1);
     expect(harness.pi.requests.filter((r) => r.role === "reviewer")).toHaveLength(1);
+    expect(harness.pi.requests.filter((r) => r.role === "verifier")).toHaveLength(1);
     expect(runStore2.transitions(failed.runId).map((t) => t.to)).toEqual([
       "READINESS_CHECK",
       "WORKSPACE_CREATION",
@@ -898,6 +1034,7 @@ describe("RunService.resume", () => {
       "FAILED",
       "VERIFICATION",
       "INDEPENDENT_REVIEW",
+      "ACCEPTANCE_VERIFICATION",
       "PUBLICATION",
       "PR_OPEN",
     ]);
@@ -982,4 +1119,55 @@ describe("RunService.resume", () => {
     ]);
     runStore2.close();
   });
+
+  it("resumes a FAILED run at ACCEPTANCE_VERIFICATION by re-verifying, re-reviewing, and launching a fresh verifier", async () => {
+    const harness = await makeHarness("run-fixture-resume-failed-acceptance");
+    harness.pi.script("refiner", [
+      taskSnapshotRefiner("run-fixture-resume-failed-acceptance"),
+    ]);
+    harness.pi.script("implementer", [implementerCompleted()]);
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    const service = new RunService(harness.deps);
+    const throwingPi: RunPiRunner = {
+      run: async (request) => {
+        if (request.role === "verifier") {
+          throw new PiRunError("verifier session exited with code 2", "verifier", {
+            stdout: "",
+            stderr: "",
+            resultPath: path.join(request.diagnosticsDir, "result.json"),
+          });
+        }
+        return harness.pi.run(request);
+      },
+    };
+    const failingDeps: RunServiceDeps = { ...harness.deps, createPi: () => throwingPi };
+    const failingService = new RunService(failingDeps);
+    const failed = await failingService.start(42);
+
+    expect(failed.stage).toBe("FAILED");
+    const runStore = harness.openRunStore();
+    expect(runStore.getRun(failed.runId)!.resumeAt).toBe("ACCEPTANCE_VERIFICATION");
+    expect(runStore.listAttempts(failed.runId).map((a) => a.role)).toEqual([
+      "implementer",
+      "reviewer",
+    ]);
+    runStore.close();
+
+    // Resume: re-verify (passes), re-review (approves again, since it's a
+    // fresh transcript-free session), then launch a fresh verifier that
+    // verifies. No new implementer session.
+    harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
+    const resumedService = new RunService(harness.deps);
+    const resumed = await resumedService.resume(failed.runId);
+
+    expect(resumed.stage).toBe("PR_OPEN");
+    const runStore2 = harness.openRunStore();
+    const attempts = runStore2.listAttempts(failed.runId).map((a) => a.role);
+    expect(attempts).toEqual(["implementer", "reviewer", "reviewer", "verifier"]);
+    expect(harness.pi.requests.filter((r) => r.role === "implementer")).toHaveLength(1);
+    expect(harness.pi.requests.filter((r) => r.role === "verifier")).toHaveLength(1);
+    runStore2.close();
+  });
+
 });

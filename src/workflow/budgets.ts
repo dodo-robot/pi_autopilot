@@ -131,7 +131,11 @@ export class BudgetTracker {
       }
     }
 
-    if (failure.stage === "CORRECTION" || failure.stage === "INDEPENDENT_REVIEW") {
+    if (
+      failure.stage === "CORRECTION" ||
+      failure.stage === "INDEPENDENT_REVIEW" ||
+      failure.stage === "ACCEPTANCE_VERIFICATION"
+    ) {
       if (this.counters.correctionCycles >= this.limits.review.maxCorrectionCycles) {
         return {
           decision: "BLOCK_BUDGET_EXHAUSTED",

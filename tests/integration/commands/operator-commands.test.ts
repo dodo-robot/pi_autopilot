@@ -8,6 +8,7 @@ import type {
   ImplementerResult,
   ReviewerResult,
   Role,
+  VerifierResult,
 } from "../../../src/domain/contracts.js";
 import type {
   CreatePullRequestInput,
@@ -195,8 +196,14 @@ function implementerBlocked(reason = "cannot proceed"): ImplementerResult {
 function reviewerApproved(): ReviewerResult {
   return {
     outcome: "APPROVED",
-    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
+  };
+}
+
+function verifierVerified(): VerifierResult {
+  return {
+    outcome: "VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
   };
 }
 
@@ -324,6 +331,7 @@ describe("autopilot status", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner()]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     await harness.run(["run", "42"]);
     const runId = /Run: (\S+)/.exec(harness.stdoutLines.join("\n"))![1]!;
     harness.stdoutLines.length = 0;
@@ -443,6 +451,7 @@ describe("autopilot resume", () => {
 
     harness.pi.script("implementer", [implementerCompleted({ summary: "Resumed." })]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     harness.stdoutLines.length = 0;
     harness.exitCodes.length = 0;
 
@@ -462,6 +471,7 @@ describe("autopilot resume", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner()]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     await harness.run(["run", "42"]);
     const runId = /Run: (\S+)/.exec(harness.stdoutLines.join("\n"))![1]!;
     harness.stdoutLines.length = 0;
@@ -480,6 +490,7 @@ describe("autopilot resume", () => {
 
     harness.pi.script("implementer", [implementerCompleted({ summary: "Resumed." })]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     await harness.run(["resume", runId, "--model", "openai/gpt-5.2", "--thinking", "high"]);
 

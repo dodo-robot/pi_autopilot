@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TaskSnapshot, ReviewerResult } from "../../../src/domain/contracts.js";
+import type {
+  ReviewerResult,
+  TaskSnapshot,
+  VerifierResult,
+} from "../../../src/domain/contracts.js";
 import type {
   CreatePullRequestInput,
   GitHubIssue,
@@ -114,19 +118,22 @@ function taskSnapshot(): TaskSnapshot {
 function approvedReview(): ReviewerResult {
   return {
     outcome: "APPROVED",
+    findings: [],
+  };
+}
+
+function verifiedAcceptance(): Extract<VerifierResult, { outcome: "VERIFIED" }> {
+  return {
+    outcome: "VERIFIED",
     criteriaResults: [
       { criterionId: "ac1", passed: true, notes: "Verified by test." },
     ],
-    findings: [],
   };
 }
 
 function changesRequestedReview(): ReviewerResult {
   return {
     outcome: "CHANGES_REQUESTED",
-    criteriaResults: [
-      { criterionId: "ac1", passed: false, notes: "Not verified." },
-    ],
     findings: [
       {
         severity: "critical",
@@ -255,6 +262,7 @@ describe("Publisher", () => {
 
     await expect(
       publisher.publish({
+        acceptance: verifiedAcceptance(),
         runId: "pub-run-1",
         issueNumber: 42,
         workspace,
@@ -292,6 +300,7 @@ describe("Publisher", () => {
 
     await expect(
       publisher.publish({
+        acceptance: verifiedAcceptance(),
         runId: "pub-run-2",
         issueNumber: 42,
         workspace,
@@ -329,6 +338,7 @@ describe("Publisher", () => {
 
     await expect(
       publisher.publish({
+        acceptance: verifiedAcceptance(),
         runId: "pub-run-3",
         issueNumber: 42,
         workspace,
@@ -339,6 +349,51 @@ describe("Publisher", () => {
         config: { baseBranch: "main", draftPr: false },
       }),
     ).rejects.toThrow(/verification/i);
+
+    store.close();
+  });
+
+  it("renders the acceptance-criteria checklist from the verifier's result, not the reviewer's", async () => {
+    const { root, remote } = await createFixtureRepo();
+    const workspaceManager = makeWorkspaceManager(root);
+    const workspace = await workspaceManager.create({
+      runId: "pub-run-checklist",
+      issueNumber: 42,
+      title: "Token refresh",
+      baseBranch: "main",
+    });
+    writeFileSync(path.join(workspace.path, "feature.txt"), "feature\n", "utf8");
+    const treeHash = await workspaceManager.treeHash(workspace);
+
+    const store = makeStore();
+    store.createRun({
+      id: "pub-run-checklist",
+      repository: { owner: "acme", repo: "pub-widgets" },
+      issueNumber: 42,
+    });
+    const github = new FakeGitHub();
+    const publisher = new Publisher({
+      github,
+      workspaceManager,
+      runStore: store,
+      processRunner: new ProcessRunner(),
+    });
+
+    await publisher.publish({
+      acceptance: verifiedAcceptance(),
+      runId: "pub-run-checklist",
+      issueNumber: 42,
+      workspace,
+      taskSnapshot: taskSnapshot(),
+      review: approvedReview(),
+      verification: passingVerification(treeHash),
+      implementationSummary: "Added expiry check.",
+      config: { baseBranch: "main", draftPr: false },
+    });
+
+    const prInput = github.createPullRequest.mock.calls[0]![0] as CreatePullRequestInput;
+    expect(prInput.body).toContain("- [x] A refresh with an expired token returns 401");
+    expect(prInput.body).toContain("Acceptance verification");
 
     store.close();
   });
@@ -370,6 +425,7 @@ describe("Publisher", () => {
     });
 
     const result = await publisher.publish({
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-4",
       issueNumber: 42,
       workspace,
@@ -466,6 +522,7 @@ describe("Publisher", () => {
     });
 
     const result = await publisher.publish({
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-5",
       issueNumber: 42,
       workspace,
@@ -530,6 +587,7 @@ describe("Publisher", () => {
     });
 
     const result = await publisher.publish({
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-6",
       issueNumber: 42,
       workspace,
@@ -582,6 +640,7 @@ describe("Publisher", () => {
     });
 
     await publisher.publish({
+      acceptance: verifiedAcceptance(),
       runId: "pub-run-7",
       issueNumber: 42,
       workspace,

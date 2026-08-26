@@ -1,4 +1,4 @@
-import type { ReviewerResult, TaskSnapshot } from "../domain/contracts.js";
+import type { ReviewerResult, TaskSnapshot, VerifierResult } from "../domain/contracts.js";
 import type {
   GitHubPort,
   PullRequestRef,
@@ -27,6 +27,7 @@ export interface PublishInput {
   workspace: Workspace;
   taskSnapshot: TaskSnapshot;
   review: ReviewerResult;
+  acceptance: Extract<VerifierResult, { outcome: "VERIFIED" }>;
   verification: VerificationEvidence;
   /** Implementer's prose summary of the change, folded into the PR body. */
   implementationSummary: string;
@@ -60,16 +61,15 @@ function renderPrBody(input: {
   runId: string;
   taskSnapshot: TaskSnapshot;
   review: ReviewerResult;
+  acceptance: Extract<VerifierResult, { outcome: "VERIFIED" }>;
   verification: VerificationEvidence;
   implementationSummary: string;
 }): string {
-  const { runId, taskSnapshot, review, verification, implementationSummary } = input;
+  const { runId, taskSnapshot, review, acceptance, verification, implementationSummary } = input;
 
   const criteriaChecklist = taskSnapshot.acceptanceCriteria
     .map((criterion) => {
-      const result = review.outcome === "APPROVED"
-        ? review.criteriaResults.find((r) => r.criterionId === criterion.id)
-        : undefined;
+      const result = acceptance.criteriaResults.find((r) => r.criterionId === criterion.id);
       const checked = result?.passed === true ? "x" : " ";
       return `- [${checked}] ${criterion.text}`;
     })
@@ -83,8 +83,12 @@ function renderPrBody(input: {
     .join("\n");
 
   const reviewSummary = review.outcome === "APPROVED"
-    ? "Reviewer outcome: **APPROVED**"
-    : `Reviewer outcome: ${review.outcome}`;
+    ? "Engineering-quality review: **APPROVED**"
+    : `Engineering-quality review: ${review.outcome}`;
+
+  const acceptanceSummary = acceptance.outcome === "VERIFIED"
+    ? "Acceptance verification: **VERIFIED** (independent of the engineering-quality review above)"
+    : `Acceptance verification: ${acceptance.outcome}`;
 
   return [
     `## Objective`,
@@ -102,6 +106,9 @@ function renderPrBody(input: {
     ``,
     `## Review`,
     reviewSummary,
+    ``,
+    `## Acceptance verification`,
+    acceptanceSummary,
     ``,
     `Refs #${taskSnapshot.issue.number}`,
     `Run: ${runId}`,
@@ -227,6 +234,7 @@ export class Publisher {
       runId: input.runId,
       taskSnapshot: input.taskSnapshot,
       review: input.review,
+      acceptance: input.acceptance,
       verification: input.verification,
       implementationSummary: input.implementationSummary,
     });

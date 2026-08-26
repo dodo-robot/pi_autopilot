@@ -16,6 +16,7 @@ import {
   ReconcilerResultSchema,
   RefinerResultSchema,
   ReviewerResultSchema,
+  VerifierResultSchema,
 } from "../domain/contracts.js";
 
 /** Mirrors pi-runner.ts's ROLE_SCHEMAS, kept local so the guard extension
@@ -25,6 +26,7 @@ const ROLE_SCHEMAS: Record<Role, z.ZodType> = {
   refiner: RefinerResultSchema,
   implementer: ImplementerResultSchema,
   reviewer: ReviewerResultSchema,
+  verifier: VerifierResultSchema,
   brainstormer: BrainstormerResultSchema,
   reconciler: ReconcilerResultSchema,
   bootstrapper: BootstrapperResultSchema,

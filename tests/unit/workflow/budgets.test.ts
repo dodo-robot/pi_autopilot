@@ -193,6 +193,44 @@ describe("BudgetTracker.recordFailure", () => {
     );
     expect(result.decision).toBe("CONTINUE");
   });
+
+  it("blocks with BLOCK_BUDGET_EXHAUSTED once ACCEPTANCE_VERIFICATION failures reach maxCorrectionCycles", () => {
+    const tracker = new BudgetTracker(
+      { implementationAttempts: 0, correctionCycles: 2 },
+      baseLimits,
+    );
+    const result = tracker.recordFailure(
+      makeFailure({ stage: "ACCEPTANCE_VERIFICATION", findings: ["criterion 3 unmet"] }),
+    );
+    expect(result.decision).toBe("BLOCK_BUDGET_EXHAUSTED");
+  });
+
+  it("shares the correction-cycle counter between INDEPENDENT_REVIEW and ACCEPTANCE_VERIFICATION failures", () => {
+    // One CHANGES_REQUESTED plus one NOT_VERIFIED must together exhaust a
+    // 2-cycle budget -- they are not two independent budgets. `counters` is
+    // the same mutable object the tracker reads on every call, mirroring how
+    // RunAttempt shares one counters object with its BudgetTracker (see
+    // src/workflow/run-service.ts:396-407).
+    const counters = { implementationAttempts: 0, correctionCycles: 0 };
+    const tracker = new BudgetTracker(counters, baseLimits);
+
+    const first = tracker.recordFailure(
+      makeFailure({ stage: "INDEPENDENT_REVIEW", findings: ["review issue"] }),
+    );
+    expect(first.decision).toBe("CONTINUE");
+    counters.correctionCycles += 1;
+
+    const second = tracker.recordFailure(
+      makeFailure({ stage: "ACCEPTANCE_VERIFICATION", findings: ["criterion unmet"] }),
+    );
+    expect(second.decision).toBe("CONTINUE");
+    counters.correctionCycles += 1;
+
+    const third = tracker.recordFailure(
+      makeFailure({ stage: "ACCEPTANCE_VERIFICATION", findings: ["still unmet"] }),
+    );
+    expect(third.decision).toBe("BLOCK_BUDGET_EXHAUSTED");
+  });
 });
 
 describe("BudgetTracker.checkDeadline", () => {

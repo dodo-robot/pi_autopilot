@@ -65,8 +65,11 @@ const VALID_PAYLOADS = {
   }),
   "valid-reviewer": JSON.stringify({
     outcome: "APPROVED",
-    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
+  }),
+  "valid-verifier": JSON.stringify({
+    outcome: "VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
   }),
   "valid-reconciler": JSON.stringify({
     coverage: [],

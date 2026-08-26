@@ -16,6 +16,7 @@ import type {
   ReviewerResult,
   RunStage,
   TaskSnapshot,
+  VerifierResult,
 } from "../domain/contracts.js";
 import type { GitHubPort } from "../github/github-adapter.js";
 import { GitHubAdapter } from "../github/github-adapter.js";
@@ -58,6 +59,7 @@ export interface RunOverrides {
   refiner?: RoleModelOverride;
   implementer?: RoleModelOverride;
   reviewer?: RoleModelOverride;
+  verifier?: RoleModelOverride;
   refinerTimeoutMs?: number;
 }
 
@@ -101,6 +103,12 @@ export interface RunServiceDeps {
 type ReviewOutcome =
   | { kind: "approved"; review: Extract<ReviewerResult, { outcome: "APPROVED" }> }
   | { kind: "changes-requested"; review: Extract<ReviewerResult, { outcome: "CHANGES_REQUESTED" }> }
+  | { kind: "terminal"; summary: RunSummary };
+
+/** Resolution of one verifier session, consumed by the approved branch of `runImplementationLoop`/`executeResume`. */
+type AcceptanceOutcome =
+  | { kind: "verified"; result: Extract<VerifierResult, { outcome: "VERIFIED" }> }
+  | { kind: "not-verified"; result: Extract<VerifierResult, { outcome: "NOT_VERIFIED" }> }
   | { kind: "terminal"; summary: RunSummary };
 
 const DEFAULT_ROLE_TIMEOUT_MS = 60 * 60_000;
@@ -164,6 +172,13 @@ export class RunService {
       null,
       piDefault,
     );
+    const verifierModel = resolveRoleModel(
+      "verifier",
+      overrides.verifier ?? null,
+      config.agents,
+      null,
+      piDefault,
+    );
 
     try {
       const active = runStore.getActiveRunForIssue(
@@ -197,6 +212,7 @@ export class RunService {
         refinerModel,
         implementerModel,
         reviewerModel,
+        verifierModel,
         overrides,
         ...(this.deps.onProgress === undefined ? {} : { onProgress: this.deps.onProgress }),
       });
@@ -265,6 +281,13 @@ export class RunService {
       null,
       piDefault,
     );
+    const verifierModel = resolveRoleModel(
+      "verifier",
+      overrides.verifier ?? null,
+      config.agents,
+      null,
+      piDefault,
+    );
 
     try {
       const run = runStore.getRun(runId);
@@ -280,7 +303,7 @@ export class RunService {
         ? (run.resumeAt ?? "IMPLEMENTATION")
         : "IMPLEMENTATION") as Extract<
         RunStage,
-        "IMPLEMENTATION" | "CORRECTION" | "VERIFICATION" | "INDEPENDENT_REVIEW"
+        "IMPLEMENTATION" | "CORRECTION" | "VERIFICATION" | "INDEPENDENT_REVIEW" | "ACCEPTANCE_VERIFICATION"
       >;
       // Validate the RESUME target from the run's current stage. Throws on
       // an illegal target (e.g. resumeAt drifted to a stage with no RESUME
@@ -320,7 +343,9 @@ export class RunService {
       const existingAttempts = runStore.listAttempts(runId);
       const initialCounters: BudgetCounters = {
         implementationAttempts: existingAttempts.filter((a) => a.role === "implementer").length,
-        correctionCycles: existingAttempts.filter((a) => a.role === "reviewer").length,
+        correctionCycles: existingAttempts.filter(
+          (a) => a.role === "reviewer" || a.role === "verifier",
+        ).length,
       };
       const initialAttemptSequence = existingAttempts.length;
 
@@ -337,6 +362,7 @@ export class RunService {
         refinerModel,
         implementerModel,
         reviewerModel,
+        verifierModel,
         overrides,
         initialCounters,
         initialAttemptSequence,
@@ -362,6 +388,7 @@ interface RunAttemptDeps {
   refinerModel: ResolvedRoleModel;
   implementerModel: ResolvedRoleModel;
   reviewerModel: ResolvedRoleModel;
+  verifierModel: ResolvedRoleModel;
   overrides: RunOverrides;
   onProgress?: (text: string) => void;
   /**
@@ -513,13 +540,32 @@ class RunAttempt {
       const reviewOutcome = await this.runReview(snapshot, workspace, verification);
       if (reviewOutcome.kind === "terminal") return reviewOutcome.summary;
       if (reviewOutcome.kind === "approved") {
-        return await this.publishRun(
+        const acceptanceOutcome = await this.runAcceptanceVerification(
+          snapshot,
+          workspace,
+          verification,
+        );
+        if (acceptanceOutcome.kind === "terminal") return acceptanceOutcome.summary;
+        if (acceptanceOutcome.kind === "verified") {
+          return await this.publishRun(
+            snapshot,
+            workspace,
+            workspaceManager,
+            verification,
+            reviewOutcome.review,
+            acceptanceOutcome.result,
+            synthesizedImplementer,
+          );
+        }
+        // NOT_VERIFIED with budget remaining: re-enter IMPLEMENTATION and
+        // loop with the acceptance-correction prompt.
+        this.transition("IMPLEMENTATION", null);
+        return await this.runImplementationLoop(
           snapshot,
           workspace,
           workspaceManager,
-          verification,
-          reviewOutcome.review,
-          synthesizedImplementer,
+          verificationRunner,
+          buildAcceptanceCorrectionPrompt(snapshot, acceptanceOutcome.result),
         );
       }
       // CHANGES_REQUESTED: bounded correction loop. runReview already
@@ -677,14 +723,28 @@ class RunAttempt {
       const reviewOutcome = await this.runReview(snapshot, workspace, verification);
       if (reviewOutcome.kind === "terminal") return reviewOutcome.summary;
       if (reviewOutcome.kind === "approved") {
-        return await this.publishRun(
+        const acceptanceOutcome = await this.runAcceptanceVerification(
           snapshot,
           workspace,
-          workspaceManager,
           verification,
-          reviewOutcome.review,
-          implementerResult,
         );
+        if (acceptanceOutcome.kind === "terminal") return acceptanceOutcome.summary;
+        if (acceptanceOutcome.kind === "verified") {
+          return await this.publishRun(
+            snapshot,
+            workspace,
+            workspaceManager,
+            verification,
+            reviewOutcome.review,
+            acceptanceOutcome.result,
+            implementerResult,
+          );
+        }
+        // NOT_VERIFIED with budget remaining: loop back for one more
+        // correction attempt, transitioning back through IMPLEMENTATION.
+        this.transition("IMPLEMENTATION", null);
+        prompt = buildAcceptanceCorrectionPrompt(snapshot, acceptanceOutcome.result);
+        continue;
       }
       // CHANGES_REQUESTED with budget remaining: loop back for one more
       // correction attempt, transitioning back through IMPLEMENTATION.
@@ -940,12 +1000,101 @@ class RunAttempt {
     return execution.result as ReviewerResult;
   }
 
+  private async launchVerifier(
+    snapshot: TaskSnapshot,
+    workspace: Workspace,
+    verification: VerificationEvidence,
+  ): Promise<VerifierResult> {
+    const attemptDir = path.join(
+      this.deps.paths.runDir(this.runId),
+      `verifier-${String(this.counters.correctionCycles)}`,
+    );
+    // See the comment in launchImplementer: a PiRunError propagates to
+    // execute()'s top-level catch, which persists it as FAILED.
+    const execution = await this.deps.pi.run({
+      role: "verifier",
+      model: this.deps.verifierModel,
+      prompt: buildVerifierPrompt(snapshot, verification),
+      worktree: workspace.path,
+      allowedCommands: [],
+      protectedPaths: this.deps.config.agentPolicy.protectedPaths,
+      sessionDir: path.join(attemptDir, "session"),
+      diagnosticsDir: path.join(attemptDir, "diagnostics"),
+      env: safeProcessEnv(),
+      timeoutMs: this.deps.config.budgets.review.timeoutMinutes * 60_000,
+    });
+    this.attemptSequence += 1;
+    this.deps.runStore.recordAttempt({
+      runId: this.runId,
+      role: "verifier",
+      attemptNumber: this.attemptSequence,
+      model: this.deps.verifierModel.model,
+      thinking: this.deps.verifierModel.thinking,
+    });
+    return execution.result as VerifierResult;
+  }
+
+  /**
+   * Launch exactly one fresh, transcript-free verifier session, called only
+   * after the reviewer has already approved. Mirrors `runReview`'s shape:
+   * never loops itself; the caller owns re-entering IMPLEMENTATION for a
+   * NOT_VERIFIED correction attempt.
+   */
+  private async runAcceptanceVerification(
+    snapshot: TaskSnapshot,
+    workspace: Workspace,
+    verification: VerificationEvidence,
+  ): Promise<AcceptanceOutcome> {
+    this.transition("ACCEPTANCE_VERIFICATION", null);
+    const acceptance = await this.launchVerifier(snapshot, workspace, verification);
+
+    if (acceptance.outcome === "VERIFIED") {
+      return { kind: "verified", result: acceptance };
+    }
+
+    const ref = await this.deps.artifacts.writeJson(
+      this.runId,
+      `acceptance-${String(this.counters.correctionCycles)}.json`,
+      acceptance,
+    );
+
+    if (acceptance.outcome === "PRODUCT_AMBIGUITY") {
+      this.transition("NEEDS_REFINEMENT", ref.relative);
+      return { kind: "terminal", summary: this.summary({ reason: acceptance.reason }) };
+    }
+    if (acceptance.outcome === "FAILED") {
+      this.transition("FAILED", ref.relative);
+      return { kind: "terminal", summary: this.summary({ reason: acceptance.reason }) };
+    }
+
+    // NOT_VERIFIED: bounded by the shared correction-cycle budget.
+    const findings = acceptance.findings.map(
+      (f) => `${f.criterionId}:${f.evidence}:${f.notes}`,
+    );
+    const decision = this.budgets.recordFailure({
+      stage: "ACCEPTANCE_VERIFICATION",
+      command: "acceptance-verification",
+      exitCode: 1,
+      findings,
+    });
+
+    if (decision.decision !== "CONTINUE") {
+      this.transition("BLOCKED", ref.relative);
+      return { kind: "terminal", summary: this.summary({ reason: decision.reason }) };
+    }
+
+    this.counters.correctionCycles += 1;
+    this.transition("CORRECTION", ref.relative);
+    return { kind: "not-verified", result: acceptance };
+  }
+
   private async publishRun(
     snapshot: TaskSnapshot,
     workspace: Workspace,
     workspaceManager: WorkspaceManager,
     verification: VerificationEvidence,
     review: Extract<ReviewerResult, { outcome: "APPROVED" }>,
+    acceptance: Extract<VerifierResult, { outcome: "VERIFIED" }>,
     implementerResult: ImplementerResult,
   ): Promise<RunSummary> {
     const issue = await this.deps.github.getIssue(this.deps.run.issueNumber);
@@ -983,6 +1132,7 @@ class RunAttempt {
       workspace,
       taskSnapshot: snapshot,
       review,
+      acceptance,
       verification,
       implementationSummary,
       config: {
@@ -1122,13 +1272,9 @@ export function buildReviewerPrompt(
 ): string {
   const resultExample = {
     outcome: "APPROVED",
-    criteriaResults: [
-      { criterionId: "ac1", passed: true, notes: "verified in the worktree" },
-    ],
     findings: [
       {
         severity: "important",
-        criterionId: "ac1",
         path: "src/example.py",
         line: 42,
         evidence: "the function returns None instead of an empty list",
@@ -1141,31 +1287,111 @@ export function buildReviewerPrompt(
     "You are an independent reviewer for a bounded, supervised task.",
     "You have not seen any implementer transcript or reasoning. Evaluate",
     "only the current worktree diff against the task snapshot and the",
-    "deterministic verification evidence below.",
+    "deterministic verification evidence below for engineering quality --",
+    "code structure, scope, safety, and maintainability. Whether the work",
+    "actually satisfies each acceptance criterion is judged separately by an",
+    "independent verifier; you do not need to render a per-criterion verdict.",
     "",
     "IMPORTANT: When you finish your review, you MUST call the submit_result",
     "tool with a JSON payload like this:",
     JSON.stringify(resultExample, null, 2),
     "",
-    "ALL fields are required. For an APPROVED outcome you MUST include",
-    "criteriaResults with one entry per task acceptance criterion (criterionId",
-    "must match a snapshot acceptanceCriteria id; passed is a boolean; notes is",
-    "a string) plus a findings array (may be empty). Use outcome CHANGES_REQUESTED",
-    "(same fields plus findings describing each requested change) if the work does",
-    "not satisfy a criterion, PRODUCT_AMBIGUITY if the task is ambiguous, or",
+    "ALL fields are required. For an APPROVED outcome you MUST include a",
+    "findings array (may be empty). Use outcome CHANGES_REQUESTED (same fields,",
+    "with findings describing each requested change) if the work has an",
+    "engineering-quality problem, PRODUCT_AMBIGUITY if the task is ambiguous, or",
     "FAILED if you cannot complete the review.",
     "",
     "Each finding in the findings array MUST have ALL of these fields:",
     "  severity: one of \"critical\" | \"important\" | \"minor\" (no other values)",
-    "  criterionId: the id of the acceptance criterion this relates to (e.g. \"ac1\")",
     "  path: the file path where the issue is (string, e.g. \"src/foo.py\")",
     "  line: the line number (integer >= 0)",
     "  evidence: a short description of what the code actually does (string)",
     "  requestedChange: a concrete fix instruction (non-empty string)",
+    "A finding MAY also include criterionId (the acceptance criterion it",
+    "relates to, e.g. \"ac1\") when relevant, but it is optional.",
     "",
     "Do not write the outcome in text; the run will fail if submit_result is not called.",
     "",
     JSON.stringify(snapshot, null, 2),
     JSON.stringify(verification, null, 2),
+  ].join("\n\n");
+}
+
+export function buildVerifierPrompt(
+  snapshot: TaskSnapshot,
+  verification: VerificationEvidence,
+): string {
+  const resultExample = {
+    outcome: "VERIFIED",
+    criteriaResults: [
+      { criterionId: "ac1", passed: true, notes: "the diff adds a 401 response for expired tokens, confirmed by the verification command's output" },
+    ],
+  };
+
+  return [
+    "You are an independent verifier for a bounded, supervised task.",
+    "You have not seen any implementer transcript, reasoning, or the",
+    "reviewer's assessment. Your sole job is to decide whether the current",
+    "worktree diff, read against the deterministic verification evidence",
+    "below, actually satisfies each acceptance criterion in the task",
+    "snapshot -- not whether the code is well-written (that was already",
+    "judged separately).",
+    "",
+    "IMPORTANT: When you finish, you MUST call the submit_result tool with a",
+    "JSON payload like this:",
+    JSON.stringify(resultExample, null, 2),
+    "",
+    "ALL fields are required. For a VERIFIED outcome you MUST include",
+    "criteriaResults with exactly one entry per task acceptanceCriteria item",
+    "(criterionId must match a snapshot acceptanceCriteria id; passed is a",
+    "boolean; notes must cite concrete evidence from the diff or the",
+    "verification output, not the task description). Use outcome",
+    "NOT_VERIFIED (same criteriaResults shape, plus a findings array) if any",
+    "criterion's evidence is insufficient, PRODUCT_AMBIGUITY if the criteria",
+    "themselves are ambiguous, or FAILED if you cannot complete verification.",
+    "",
+    "Each finding in a NOT_VERIFIED result's findings array MUST have ALL of",
+    "these fields:",
+    "  criterionId: the id of the unmet acceptance criterion (e.g. \"ac1\")",
+    "  evidence: what the diff/verification output actually shows (string)",
+    "  notes: why that evidence does not satisfy the criterion (string)",
+    "",
+    "Do not write the outcome in text; the run will fail if submit_result is not called.",
+    "",
+    JSON.stringify(snapshot, null, 2),
+    JSON.stringify(verification, null, 2),
+  ].join("\n\n");
+}
+
+export function buildAcceptanceCorrectionPrompt(
+  snapshot: TaskSnapshot,
+  verifierResult: Extract<VerifierResult, { outcome: "NOT_VERIFIED" }>,
+): string {
+  const resultExample = {
+    outcome: "COMPLETED",
+    summary: "Addressed unmet acceptance criteria",
+    changedPaths: ["file1.py"],
+    commandsAttempted: ["uv run pytest"],
+    unresolvedProblems: [],
+    evidenceLocations: [],
+  };
+
+  return [
+    "You are the implementer continuing a bounded, supervised task.",
+    "An independent verifier found that the current work does not satisfy",
+    "one or more acceptance criteria. Address the findings below using only",
+    "the current worktree state. You have no access to any prior session",
+    "transcript.",
+    "",
+    "IMPORTANT: When you finish, you MUST call submit_result with all",
+    "required fields:",
+    JSON.stringify(resultExample, null, 2),
+    "",
+    "Task snapshot:",
+    JSON.stringify(snapshot, null, 2),
+    "",
+    "Verifier findings:",
+    JSON.stringify(verifierResult, null, 2),
   ].join("\n\n");
 }

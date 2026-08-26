@@ -23,6 +23,7 @@ export const RoleAgentsConfigSchema = z
     refiner: RoleModelEntrySchema.optional(),
     implementer: RoleModelEntrySchema.optional(),
     reviewer: RoleModelEntrySchema.optional(),
+    verifier: RoleModelEntrySchema.optional(),
     brainstormer: RoleModelEntrySchema.optional(),
     reconciler: RoleModelEntrySchema.optional(),
     bootstrapper: RoleModelEntrySchema.optional(),

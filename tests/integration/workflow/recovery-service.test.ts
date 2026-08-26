@@ -26,6 +26,7 @@ import type {
   ReviewerResult,
   Role,
   TaskSnapshot,
+  VerifierResult,
 } from "../../../src/domain/contracts.js";
 import type { PiExecution, PiRunRequest } from "../../../src/pi/pi-runner.js";
 
@@ -356,8 +357,14 @@ class ScriptedPiRunner implements RunPiRunner {
 function reviewerApproved(): ReviewerResult {
   return {
     outcome: "APPROVED",
-    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
+  };
+}
+
+function verifierVerified(): VerifierResult {
+  return {
+    outcome: "VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
   };
 }
 
@@ -608,6 +615,7 @@ describe("RecoveryService.resume", () => {
     const pi = new ScriptedPiRunner();
     pi.script("implementer", [implementerCompleted("Resumed.")]);
     pi.script("reviewer", [reviewerApproved()]);
+    pi.script("verifier", [verifierVerified()]);
 
     const runService = new RunService({
       cwd: harness.root,
@@ -641,12 +649,14 @@ describe("RecoveryService.resume", () => {
 
     // Attempt counters continue rather than resetting: the pre-existing
     // attempt (attemptNumber 1, recorded before BLOCKED) plus exactly one
-    // new implementer attempt and one new reviewer attempt.
+    // new implementer attempt, one new reviewer attempt, and one new
+    // verifier attempt.
     const attempts = harness.runStore.listAttempts(runId);
-    expect(attempts.map((a) => a.attemptNumber)).toEqual([1, 2, 3]);
+    expect(attempts.map((a) => a.attemptNumber)).toEqual([1, 2, 3, 4]);
     expect(attempts[0]!.role).toBe("implementer");
     expect(attempts[1]!.role).toBe("implementer");
     expect(attempts[2]!.role).toBe("reviewer");
+    expect(attempts[3]!.role).toBe("verifier");
 
     // The original frozen snapshot is preserved (never regenerated).
     const run = harness.runStore.getRun(runId);

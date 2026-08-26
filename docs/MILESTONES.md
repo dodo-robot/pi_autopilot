@@ -339,6 +339,25 @@ label policy.
 
 ---
 
+## 2026-08-26 — Dedicated verifier role
+
+Added an independent `verifier` role that runs after Reviewer approval, judging
+whether each acceptance criterion is satisfied using the diff and deterministic
+verification evidence. It supplements deterministic verification (`VerificationRunner`),
+which is unchanged, rather than replacing it. The Reviewer keeps judging
+engineering quality only.
+
+- New `verifier` role schema and prompt (transcript-free, no reviewer/implementer
+  context)
+- New `ACCEPTANCE_VERIFICATION` stage between `INDEPENDENT_REVIEW` and
+  `PUBLICATION`
+- `NOT_VERIFIED` outcome loops back through the existing correction-cycle budget
+- PR body's acceptance-criteria checklist sourced from the verifier's result
+
+See spec: `docs/superpowers/specs/2026-08-26-dedicated-verifier-role-design.md`.
+
+---
+
 ## Backlog — missing features
 
 Gap review of the repo against `docs/resources/requirements.md` and
@@ -368,10 +387,6 @@ results (Tier 1)** — now shipped; see its section above.)_
 
 ### Smaller/design-level gaps
 
-- **Dedicated verifier role.** Verification is deterministic (shell
-  commands) rather than an independent LLM verifier session distinct from
-  the Reviewer — allowed under "MAY combine roles" (requirements.md §9),
-  but acceptance-criteria interpretation still rides on the Reviewer alone.
 - **Broader plan-evolution detection.** `MARK_STALE` covers this within
   reconciliation; there's no general "replan affected future work"
   mechanism outside that flow. (requirements.md §20)

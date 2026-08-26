@@ -8,6 +8,7 @@ import type {
   ImplementerResult,
   ReviewerResult,
   Role,
+  VerifierResult,
 } from "../../../src/domain/contracts.js";
 import type {
   CreatePullRequestInput,
@@ -206,8 +207,14 @@ function implementerCompleted(
 function reviewerApproved(): ReviewerResult {
   return {
     outcome: "APPROVED",
-    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
     findings: [],
+  };
+}
+
+function verifierVerified(): VerifierResult {
+  return {
+    outcome: "VERIFIED",
+    criteriaResults: [{ criterionId: "ac1", passed: true, notes: "verified" }],
   };
 }
 
@@ -353,6 +360,7 @@ describe("autopilot run", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-cmd-overrides")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     await harness.run([
       "run",
@@ -393,6 +401,7 @@ describe("autopilot run", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-cmd-progress")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
     harness.pi.onRun = (request) => {
       if (request.role !== "implementer") return;
       mkdirSync(request.sessionDir, { recursive: true });
@@ -421,6 +430,7 @@ describe("autopilot run", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-cmd-pr-open")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     await harness.run(["run", "42"]);
 
@@ -434,6 +444,7 @@ describe("autopilot run", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-cmd-progress-status")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     await harness.run(["run", "42"]);
 
@@ -558,6 +569,7 @@ describe("autopilot run", () => {
     harness.pi.script("refiner", [taskSnapshotRefiner("run-cmd-fresh")]);
     harness.pi.script("implementer", [implementerCompleted()]);
     harness.pi.script("reviewer", [reviewerApproved()]);
+    harness.pi.script("verifier", [verifierVerified()]);
 
     await harness.run(["run", "42", "--fresh"]);
 

@@ -53,6 +53,14 @@ const TRANSITIONS: Record<RunStage, ReadonlySet<RunStage>> = {
     "CANCELLED",
   ]),
   INDEPENDENT_REVIEW: new Set([
+    "ACCEPTANCE_VERIFICATION",
+    "CORRECTION",
+    "NEEDS_REFINEMENT",
+    "BLOCKED",
+    "FAILED",
+    "CANCELLED",
+  ]),
+  ACCEPTANCE_VERIFICATION: new Set([
     "PUBLICATION",
     "CORRECTION",
     "NEEDS_REFINEMENT",
@@ -106,6 +114,7 @@ export type WorkflowEvent =
   | { type: "VERIFICATION_PASSED" }
   | { type: "VERIFICATION_FAILED" }
   | { type: "REVIEW_RESULT"; outcome: "APPROVED" | "CHANGES_REQUESTED" | "PRODUCT_AMBIGUITY" | "FAILED" }
+  | { type: "ACCEPTANCE_RESULT"; outcome: "VERIFIED" | "NOT_VERIFIED" | "PRODUCT_AMBIGUITY" | "FAILED" }
   | { type: "CORRECTION_STARTED" }
   | { type: "PUBLISHED" }
   | { type: "FATAL_ERROR" }
@@ -116,7 +125,8 @@ export type WorkflowEvent =
         | "IMPLEMENTATION"
         | "CORRECTION"
         | "VERIFICATION"
-        | "INDEPENDENT_REVIEW";
+        | "INDEPENDENT_REVIEW"
+        | "ACCEPTANCE_VERIFICATION";
     };
 
 /**
@@ -192,6 +202,9 @@ function resolveTarget(event: WorkflowEvent, from: RunStage, context: Transition
     case "REVIEW_RESULT":
       if (from !== "INDEPENDENT_REVIEW") break;
       return resolveReviewResult(event.outcome);
+    case "ACCEPTANCE_RESULT":
+      if (from !== "ACCEPTANCE_VERIFICATION") break;
+      return resolveAcceptanceResult(event.outcome);
     case "CORRECTION_STARTED":
       if (from !== "CORRECTION") break;
       return "IMPLEMENTATION";
@@ -216,8 +229,33 @@ function resolveReviewResult(
 ): RunStage {
   switch (outcome) {
     case "APPROVED":
-      return "PUBLICATION";
+      return "ACCEPTANCE_VERIFICATION";
     case "CHANGES_REQUESTED":
+      return "CORRECTION";
+    case "PRODUCT_AMBIGUITY":
+      return "NEEDS_REFINEMENT";
+    case "FAILED":
+      return "FAILED";
+  }
+}
+
+/**
+ * Map a verifier outcome to its target stage. Whether a NOT_VERIFIED
+ * outcome can actually afford another correction cycle is a budget
+ * decision, not a transition-legality decision: {@link BudgetTracker} (see
+ * `src/workflow/budgets.ts`) is responsible for deciding CONTINUE vs
+ * BLOCK_BUDGET_EXHAUSTED before this event is ever raised. This function
+ * always resolves NOT_VERIFIED to CORRECTION, matching the shared
+ * correction-cycle budget consumed by both reviewer CHANGES_REQUESTED and
+ * verifier NOT_VERIFIED outcomes.
+ */
+function resolveAcceptanceResult(
+  outcome: "VERIFIED" | "NOT_VERIFIED" | "PRODUCT_AMBIGUITY" | "FAILED",
+): RunStage {
+  switch (outcome) {
+    case "VERIFIED":
+      return "PUBLICATION";
+    case "NOT_VERIFIED":
       return "CORRECTION";
     case "PRODUCT_AMBIGUITY":
       return "NEEDS_REFINEMENT";
