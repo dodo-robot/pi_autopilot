@@ -46,15 +46,9 @@ describe("buildReviewerPrompt", () => {
     expect(prompt).toContain("submit_result");
   });
 
-  it("includes the exact reviewer result schema example so the reviewer produces criteriaResults", () => {
+  it("no longer asks the reviewer for a criteria verdict (owned by the verifier)", () => {
     const prompt = buildReviewerPrompt(snapshot(), verification());
-    // The reviewer must know APPROVED requires criteriaResults + findings,
-    // otherwise a provider may submit an APPROVED result missing them
-    // (a validated-reviewer result that fails RunStageSchema on the review path).
-    expect(prompt).toContain("criteriaResults");
-    expect(prompt).toContain("criterionId");
-    expect(prompt).toContain("passed");
+    expect(prompt).not.toContain("criteriaResults");
     expect(prompt).toContain("findings");
-    expect(prompt).toMatch(/criteriaResults[\s\S]*criterionId/);
   });
 });

@@ -16,6 +16,7 @@ import type {
   ReviewerResult,
   RunStage,
   TaskSnapshot,
+  VerifierResult,
 } from "../domain/contracts.js";
 import type { GitHubPort } from "../github/github-adapter.js";
 import { GitHubAdapter } from "../github/github-adapter.js";
@@ -1122,13 +1123,9 @@ export function buildReviewerPrompt(
 ): string {
   const resultExample = {
     outcome: "APPROVED",
-    criteriaResults: [
-      { criterionId: "ac1", passed: true, notes: "verified in the worktree" },
-    ],
     findings: [
       {
         severity: "important",
-        criterionId: "ac1",
         path: "src/example.py",
         line: 42,
         evidence: "the function returns None instead of an empty list",
@@ -1141,31 +1138,111 @@ export function buildReviewerPrompt(
     "You are an independent reviewer for a bounded, supervised task.",
     "You have not seen any implementer transcript or reasoning. Evaluate",
     "only the current worktree diff against the task snapshot and the",
-    "deterministic verification evidence below.",
+    "deterministic verification evidence below for engineering quality --",
+    "code structure, scope, safety, and maintainability. Whether the work",
+    "actually satisfies each acceptance criterion is judged separately by an",
+    "independent verifier; you do not need to render a per-criterion verdict.",
     "",
     "IMPORTANT: When you finish your review, you MUST call the submit_result",
     "tool with a JSON payload like this:",
     JSON.stringify(resultExample, null, 2),
     "",
-    "ALL fields are required. For an APPROVED outcome you MUST include",
-    "criteriaResults with one entry per task acceptance criterion (criterionId",
-    "must match a snapshot acceptanceCriteria id; passed is a boolean; notes is",
-    "a string) plus a findings array (may be empty). Use outcome CHANGES_REQUESTED",
-    "(same fields plus findings describing each requested change) if the work does",
-    "not satisfy a criterion, PRODUCT_AMBIGUITY if the task is ambiguous, or",
+    "ALL fields are required. For an APPROVED outcome you MUST include a",
+    "findings array (may be empty). Use outcome CHANGES_REQUESTED (same fields,",
+    "with findings describing each requested change) if the work has an",
+    "engineering-quality problem, PRODUCT_AMBIGUITY if the task is ambiguous, or",
     "FAILED if you cannot complete the review.",
     "",
     "Each finding in the findings array MUST have ALL of these fields:",
     "  severity: one of \"critical\" | \"important\" | \"minor\" (no other values)",
-    "  criterionId: the id of the acceptance criterion this relates to (e.g. \"ac1\")",
     "  path: the file path where the issue is (string, e.g. \"src/foo.py\")",
     "  line: the line number (integer >= 0)",
     "  evidence: a short description of what the code actually does (string)",
     "  requestedChange: a concrete fix instruction (non-empty string)",
+    "A finding MAY also include criterionId (the acceptance criterion it",
+    "relates to, e.g. \"ac1\") when relevant, but it is optional.",
     "",
     "Do not write the outcome in text; the run will fail if submit_result is not called.",
     "",
     JSON.stringify(snapshot, null, 2),
     JSON.stringify(verification, null, 2),
+  ].join("\n\n");
+}
+
+export function buildVerifierPrompt(
+  snapshot: TaskSnapshot,
+  verification: VerificationEvidence,
+): string {
+  const resultExample = {
+    outcome: "VERIFIED",
+    criteriaResults: [
+      { criterionId: "ac1", passed: true, notes: "the diff adds a 401 response for expired tokens, confirmed by the verification command's output" },
+    ],
+  };
+
+  return [
+    "You are an independent verifier for a bounded, supervised task.",
+    "You have not seen any implementer transcript, reasoning, or the",
+    "reviewer's assessment. Your sole job is to decide whether the current",
+    "worktree diff, read against the deterministic verification evidence",
+    "below, actually satisfies each acceptance criterion in the task",
+    "snapshot -- not whether the code is well-written (that was already",
+    "judged separately).",
+    "",
+    "IMPORTANT: When you finish, you MUST call the submit_result tool with a",
+    "JSON payload like this:",
+    JSON.stringify(resultExample, null, 2),
+    "",
+    "ALL fields are required. For a VERIFIED outcome you MUST include",
+    "criteriaResults with exactly one entry per task acceptanceCriteria item",
+    "(criterionId must match a snapshot acceptanceCriteria id; passed is a",
+    "boolean; notes must cite concrete evidence from the diff or the",
+    "verification output, not the task description). Use outcome",
+    "NOT_VERIFIED (same criteriaResults shape, plus a findings array) if any",
+    "criterion's evidence is insufficient, PRODUCT_AMBIGUITY if the criteria",
+    "themselves are ambiguous, or FAILED if you cannot complete verification.",
+    "",
+    "Each finding in a NOT_VERIFIED result's findings array MUST have ALL of",
+    "these fields:",
+    "  criterionId: the id of the unmet acceptance criterion (e.g. \"ac1\")",
+    "  evidence: what the diff/verification output actually shows (string)",
+    "  notes: why that evidence does not satisfy the criterion (string)",
+    "",
+    "Do not write the outcome in text; the run will fail if submit_result is not called.",
+    "",
+    JSON.stringify(snapshot, null, 2),
+    JSON.stringify(verification, null, 2),
+  ].join("\n\n");
+}
+
+export function buildAcceptanceCorrectionPrompt(
+  snapshot: TaskSnapshot,
+  verifierResult: Extract<VerifierResult, { outcome: "NOT_VERIFIED" }>,
+): string {
+  const resultExample = {
+    outcome: "COMPLETED",
+    summary: "Addressed unmet acceptance criteria",
+    changedPaths: ["file1.py"],
+    commandsAttempted: ["uv run pytest"],
+    unresolvedProblems: [],
+    evidenceLocations: [],
+  };
+
+  return [
+    "You are the implementer continuing a bounded, supervised task.",
+    "An independent verifier found that the current work does not satisfy",
+    "one or more acceptance criteria. Address the findings below using only",
+    "the current worktree state. You have no access to any prior session",
+    "transcript.",
+    "",
+    "IMPORTANT: When you finish, you MUST call submit_result with all",
+    "required fields:",
+    JSON.stringify(resultExample, null, 2),
+    "",
+    "Task snapshot:",
+    JSON.stringify(snapshot, null, 2),
+    "",
+    "Verifier findings:",
+    JSON.stringify(verifierResult, null, 2),
   ].join("\n\n");
 }
