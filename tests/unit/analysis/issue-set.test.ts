@@ -9,14 +9,14 @@ import {
 
 const repo = { owner: "acme", repo: "widgets" };
 
-function makeIssue(n: number): GitHubIssue {
+function makeIssue(n: number, state = "open"): GitHubIssue {
   return {
     number: n,
     nodeId: `I_${n}`,
     title: `Task ${n}`,
     body: "body",
     updatedAt: "2026-08-20T00:00:00Z",
-    state: "open",
+    state,
     htmlUrl: `https://github.com/acme/widgets/issues/${n}`,
   };
 }
@@ -161,6 +161,51 @@ describe("resolveIssueSet", () => {
     await expect(
       resolveIssueSet([1, 500], 28, github, repo),
     ).rejects.toThrow("rate limit exceeded");
+  });
+
+  it("excludes closed issues and records them as skipped", async () => {
+    const github = new FakeGitHub([
+      makeIssue(101),
+      makeIssue(102, "closed"),
+      makeIssue(103),
+    ] as GitHubIssue[]);
+
+    const set = await resolveIssueSet([101, 102, 103], 28, github, repo);
+
+    expect(set.issues.map((i) => i.number)).toEqual([101, 103]);
+    expect(set.skipped).toEqual([{ issue: 102, reason: "closed" }]);
+    expect(set.missing).toEqual([]);
+  });
+
+  it("treats a CLOSED state case-insensitively", async () => {
+    const github = new FakeGitHub([makeIssue(101, "CLOSED")] as GitHubIssue[]);
+
+    const set = await resolveIssueSet([101], 28, github, repo);
+
+    expect(set.issues).toEqual([]);
+    expect(set.skipped).toEqual([{ issue: 101, reason: "closed" }]);
+  });
+
+  it("keeps open issues and reports an empty skipped list", async () => {
+    const github = new FakeGitHub([makeIssue(101), makeIssue(102)] as GitHubIssue[]);
+
+    const set = await resolveIssueSet([101, 102], 28, github, repo);
+
+    expect(set.issues.map((i) => i.number)).toEqual([101, 102]);
+    expect(set.skipped).toEqual([]);
+  });
+
+  it("reports closed and missing issues independently", async () => {
+    const github = new FakeGitHub([
+      makeIssue(101),
+      makeIssue(102, "closed"),
+    ] as GitHubIssue[]);
+
+    const set = await resolveIssueSet([101, 102, 999], 28, github, repo);
+
+    expect(set.issues.map((i) => i.number)).toEqual([101]);
+    expect(set.skipped).toEqual([{ issue: 102, reason: "closed" }]);
+    expect(set.missing).toEqual([999]);
   });
 
   it("propagates a plain (non-GitHubError) throw", async () => {

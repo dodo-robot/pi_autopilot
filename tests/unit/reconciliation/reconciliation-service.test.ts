@@ -338,6 +338,86 @@ describe("ReconciliationService.reconcile", () => {
     );
   });
 
+  it("rejects a closed epic before running the reconciler", async () => {
+    const closedEpic = new (class extends FakeGitHub {
+      override async getIssue(number: number): Promise<GitHubIssue> {
+        const issue = await super.getIssue(number);
+        if (number === 12) return { ...issue, state: "closed" };
+        return issue;
+      }
+    })();
+    const pi: ReconcilerRunner = {
+      async run(): Promise<PiExecution> {
+        throw new Error("reconciler must not run for closed epics");
+      },
+    };
+    const { service } = makeService(pi, closedEpic);
+
+    await expect(service.reconcile(12, [])).rejects.toThrow(
+      "epic #12 is closed; reconcile only operates on open epics",
+    );
+  });
+
+  it("excludes closed epic checklist issues from the reconciler prompt", async () => {
+    capturedPrompt = "";
+    const withClosedIssue = new (class extends FakeGitHub {
+      override async getIssue(number: number): Promise<GitHubIssue> {
+        const issue = await super.getIssue(number);
+        if (number === 16) return { ...issue, state: "closed" };
+        return issue;
+      }
+    })();
+    const { service } = makeService(capturePi(), withClosedIssue);
+
+    await service.reconcile(12, []);
+
+    expect(capturedPrompt).toContain("#15 — OAuth callback (open)");
+    expect(capturedPrompt).not.toContain("#16 — Create user from GitHub identity");
+  });
+
+  it("discards reconciler patches targeting closed epic checklist issues", async () => {
+    const withClosedIssue = new (class extends FakeGitHub {
+      override async getIssue(number: number): Promise<GitHubIssue> {
+        const issue = await super.getIssue(number);
+        if (number === 16) return { ...issue, state: "closed" };
+        return issue;
+      }
+    })();
+    const { service } = makeService(
+      fakePi({
+        coverage: [],
+        patches: [
+          { type: "KEEP", issue: 15, reason: "open issue remains in scope" },
+          { type: "MARK_STALE", issue: 16, reason: "closed issue must be discarded" },
+          {
+            type: "CREATE_ISSUE",
+            epic: 12,
+            reason: "missing active requirement still needs a new issue",
+            spec: {
+              title: "Add session revocation",
+              enrichment: {
+                goal: "Allow admins to revoke sessions",
+                sourceRequirements: ["REQ-AUTH-009"],
+                acceptanceCriteria: ["Admins can revoke an active session"],
+                constraints: [],
+                nonGoals: [],
+                validation: ["npm test -- auth"],
+                relevantAreas: ["src/auth/"],
+              },
+            },
+          },
+        ],
+      }),
+      withClosedIssue,
+    );
+
+    const report = await service.reconcile(12, []);
+
+    expect(report.patches).toContainEqual(expect.objectContaining({ type: "KEEP", issue: 15 }));
+    expect(report.patches).toContainEqual(expect.objectContaining({ type: "CREATE_ISSUE", epic: 12 }));
+    expect(report.patches).not.toContainEqual(expect.objectContaining({ issue: 16 }));
+  });
+
   it("propagates a PiRunError from the reconciler session without swallowing it", async () => {
     const failing: ReconcilerRunner = {
       async run(): Promise<PiExecution> {

@@ -1,14 +1,67 @@
 import type { GitHubPort, GitHubIssue } from "../github/github-adapter.js";
 import { GitHubError } from "../github/github-adapter.js";
 import type { RepositoryRef } from "../domain/contracts.js";
+import { AGENT_IN_PROGRESS_LABEL } from "./label-reconciliation.js";
+
+/** Why a fetched issue was excluded from the analyzed set. */
+export interface SkippedIssue {
+  issue: number;
+  reason: "closed";
+}
 
 export interface ResolvedIssueSet {
   /** Issues actually fetched and analyzed. */
   issues: GitHubIssue[];
   /** Input refs we could not fetch (e.g. requested number absent on origin). */
   missing: number[];
+  /**
+   * Refs that were fetched successfully but deliberately excluded from the
+   * analyzed set. Reported rather than silently dropped so callers can explain
+   * why a requested issue is absent from the resulting report.
+   */
+  skipped: SkippedIssue[];
   /** 1-based line numbers of checklist bullets that were prose-only (epic parse). */
   unresolvedProseLines: number[];
+}
+
+/** True when GitHub reports the issue as closed (state casing is not guaranteed). */
+export function isClosedIssue(issue: GitHubIssue): boolean {
+  return issue.state.toLowerCase() === "closed";
+}
+
+/**
+ * Guard for commands that execute or mutate work on a single issue
+ * (`start`, `prepare`). Such commands operate only on open, unclaimed
+ * tickets: a closed issue is finished work, and an `agent:in-progress` issue
+ * is already claimed by the daemon, so acting on it would duplicate a run.
+ *
+ * Throws with an actionable message; returns normally when the issue is
+ * eligible. Label reads that fail are treated as "not claimed" so a label
+ * outage cannot block all execution.
+ */
+export async function assertIssueActionable(
+  issue: GitHubIssue,
+  github: Pick<GitHubPort, "listLabels">,
+): Promise<void> {
+  if (isClosedIssue(issue)) {
+    throw new Error(
+      `issue #${String(issue.number)} is closed; autopilot only operates on open issues`,
+    );
+  }
+
+  let labels: string[];
+  try {
+    labels = await github.listLabels(issue.number);
+  } catch {
+    return;
+  }
+
+  if (labels.includes(AGENT_IN_PROGRESS_LABEL)) {
+    throw new Error(
+      `issue #${String(issue.number)} is already claimed (${AGENT_IN_PROGRESS_LABEL}); ` +
+        `wait for the active run to finish or remove the label if it is stuck`,
+    );
+  }
 }
 
 /** Markdown list-bullet prefix: `- ` or `* ` (with flexible leading space).
@@ -125,6 +178,10 @@ function isNotFound(error: unknown): boolean {
  * Fetch each requested issue via `github.getIssue`. A genuinely missing issue
  * (404) is recorded in `missing` and skipped; an infrastructure failure is
  * rethrown so the command exits non-zero rather than masking the outage.
+ *
+ * Closed issues are excluded from `issues` and recorded in `skipped`: work is
+ * only ever scoped to open tickets, and a closed issue reaching analysis can
+ * otherwise be classified READY and executed.
  */
 export async function resolveIssueSet(
   refs: number[],
@@ -134,15 +191,25 @@ export async function resolveIssueSet(
 ): Promise<ResolvedIssueSet> {
   const issues: GitHubIssue[] = [];
   const missing: number[] = [];
+  const skipped: SkippedIssue[] = [];
 
   for (const ref of refs) {
+    let issue: GitHubIssue;
     try {
-      issues.push(await github.getIssue(ref));
+      issue = await github.getIssue(ref);
     } catch (error) {
       if (!isNotFound(error)) throw error;
       missing.push(ref);
+      continue;
     }
+
+    if (isClosedIssue(issue)) {
+      skipped.push({ issue: ref, reason: "closed" });
+      continue;
+    }
+
+    issues.push(issue);
   }
 
-  return { issues, missing, unresolvedProseLines: [] };
+  return { issues, missing, skipped, unresolvedProseLines: [] };
 }

@@ -66,6 +66,29 @@ export interface ReconciliationReport {
 const DEFAULT_RECONCILER_TIMEOUT_MS = 10 * 60_000;
 const REPORT_ARTIFACT = "reconciliation-report.json";
 
+function isClosed(issue: GitHubIssue): boolean {
+  return issue.state.toLowerCase() === "closed";
+}
+
+function patchReferencesClosedIssue(patch: BacklogPatch, closedIssueNumbers: Set<number>): boolean {
+  switch (patch.type) {
+    case "CREATE_ISSUE":
+      return false;
+    case "MERGE_DUPLICATE":
+      return closedIssueNumbers.has(patch.keep) || closedIssueNumbers.has(patch.duplicate);
+    case "ADD_DEPENDENCY":
+    case "REMOVE_DEPENDENCY":
+      return closedIssueNumbers.has(patch.issue) || closedIssueNumbers.has(patch.dependsOn);
+    case "NEEDS_HUMAN":
+      return patch.issue !== null && closedIssueNumbers.has(patch.issue);
+    case "KEEP":
+    case "ENRICH_ISSUE":
+    case "SPLIT_ISSUE":
+    case "MARK_STALE":
+      return closedIssueNumbers.has(patch.issue);
+  }
+}
+
 /**
  * Runs one bounded reconciler session for an epic and produces a durable,
  * policy-annotated `ReconciliationReport`. Strictly read-only: never
@@ -101,22 +124,24 @@ export class ReconciliationService {
       );
     }
 
-    // Reject closed epics before any reconciler work.
-    if (epic.state === "closed") {
+    if (isClosed(epic)) {
       throw new Error(`epic #${epicRef} is closed; reconcile only operates on open epics`);
     }
 
     const { issues: epicIssueRefs, unresolvedProseLines } = collectEpicIssueRefs(epic.body);
     const uniqueRefs = [...new Set(epicIssueRefs)];
-    const { issues, missing } = await resolveIssueSet(
+    // `resolveIssueSet` already drops closed checklist issues and reports them
+    // under `skipped`; only open issues reach the reconciler.
+    const { issues: activeIssues, missing, skipped } = await resolveIssueSet(
       uniqueRefs,
       epicRef,
       this.deps.github,
       repository,
     );
 
-    // Filter out closed checklist issues; only open issues are in active reconcile scope.
-    const openIssues = issues.filter((issue) => issue.state !== "closed");
+    const closedIssueNumbers = new Set(
+      skipped.filter((entry) => entry.reason === "closed").map((entry) => entry.issue),
+    );
 
     const latestApply = await this.deps.artifacts.readLatestApply(
       repository.owner,
@@ -136,7 +161,7 @@ export class ReconciliationService {
     const prompt = buildReconcilerPrompt({
       repository,
       epic,
-      issues: openIssues,
+      issues: activeIssues,
       requirementDocs,
       ...(applySteering !== undefined && applySteering.length > 0 ? { applySteering } : {}),
     });
@@ -183,7 +208,7 @@ export class ReconciliationService {
     }));
 
     const issueLikes: Array<{ number: number; title: string; body: string; state: string }> =
-      openIssues.map((issue: GitHubIssue) => ({
+      activeIssues.map((issue: GitHubIssue) => ({
         number: issue.number,
         title: issue.title,
         body: issue.body,
@@ -195,16 +220,8 @@ export class ReconciliationService {
       issueLikes,
     );
 
-    // Discard patches targeting closed/out-of-scope issues; only report patches for open checklist issues.
     const patches: ReconciledPatch[] = downgraded
-      .filter((patch) => {
-        if (patch.issue !== null) {
-          const target = openIssues.find((i) => i.number === patch.issue);
-          return target !== undefined;
-        }
-        // NEEDS_HUMAN patches with issue=null are kept (prose-only checklist lines).
-        return true;
-      })
+      .filter((patch) => !patchReferencesClosedIssue(patch, closedIssueNumbers))
       .map((patch) => ({
         ...patch,
         policy: classifyPatch(patch),
