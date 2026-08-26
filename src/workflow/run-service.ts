@@ -303,7 +303,7 @@ export class RunService {
         ? (run.resumeAt ?? "IMPLEMENTATION")
         : "IMPLEMENTATION") as Extract<
         RunStage,
-        "IMPLEMENTATION" | "CORRECTION" | "VERIFICATION" | "INDEPENDENT_REVIEW"
+        "IMPLEMENTATION" | "CORRECTION" | "VERIFICATION" | "INDEPENDENT_REVIEW" | "ACCEPTANCE_VERIFICATION"
       >;
       // Validate the RESUME target from the run's current stage. Throws on
       // an illegal target (e.g. resumeAt drifted to a stage with no RESUME
@@ -343,7 +343,9 @@ export class RunService {
       const existingAttempts = runStore.listAttempts(runId);
       const initialCounters: BudgetCounters = {
         implementationAttempts: existingAttempts.filter((a) => a.role === "implementer").length,
-        correctionCycles: existingAttempts.filter((a) => a.role === "reviewer").length,
+        correctionCycles: existingAttempts.filter(
+          (a) => a.role === "reviewer" || a.role === "verifier",
+        ).length,
       };
       const initialAttemptSequence = existingAttempts.length;
 
